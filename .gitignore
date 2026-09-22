@@ -1,0 +1,8 @@
+.env
+node_modules/
+data.json
+miniapp/uploads/
+*.log
+hackathon-brief.pdf
+Эффективный бизнес.pdf
+presentation.pdf
