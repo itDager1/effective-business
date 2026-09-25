@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { locate, withDistance } from './cities.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.DATA_FILE
@@ -380,6 +381,15 @@ export const dbOperations = {
     return database.vacancies.find(v => v.id === vacancyId) || null;
   },
 
+  homePlace: (userId) => {
+    const role = database.users.find((u) => u.user_id === userId)?.role;
+    const worker = database.workers.find((w) => w.user_id === userId);
+    const employer = database.employers.find((e) => e.user_id === userId);
+    const vacancy = database.vacancies.find((v) => v.employer_id === userId);
+    if (role === 'employer') return employer?.legal_address || vacancy?.location || worker?.city || null;
+    return worker?.city || employer?.legal_address || vacancy?.location || null;
+  },
+
   getUniqueLocations: (excludeEmployerId = null) => {
     const locations = database.vacancies
       .filter(v => excludeEmployerId == null || v.employer_id !== excludeEmployerId)
@@ -410,8 +420,13 @@ export const dbOperations = {
       list = list.filter(v => v.seasonality === filters.seasonality);
     }
     if (filters.location) {
-      const loc = filters.location.toLowerCase();
-      list = list.filter(v => (v.location || '').toLowerCase().includes(loc));
+      const wanted = locate(filters.location);
+      const loc = (wanted?.name || filters.location).toLowerCase();
+      list = list.filter((v) => {
+        const place = locate(v.location);
+        if (wanted && place) return place.name === wanted.name;
+        return (v.location || '').toLowerCase().includes(loc);
+      });
     }
     if (filters.keyword) {
       const k = filters.keyword.toLowerCase();
@@ -421,8 +436,17 @@ export const dbOperations = {
         (v.requirements || '').toLowerCase().includes(k)
       );
     }
+    const origin = filters.near || null;
+    list = list.map((vacancy) => withDistance(vacancy, vacancy.location, origin));
     const sort = filters.sort || 'new';
-    if (sort === 'title') {
+    if (sort === 'distance') {
+      list.sort((a, b) => {
+        if (a.distance_km == null && b.distance_km == null) return 0;
+        if (a.distance_km == null) return 1;
+        if (b.distance_km == null) return -1;
+        return a.distance_km - b.distance_km;
+      });
+    } else if (sort === 'title') {
       list.sort((a, b) => (a.job_title || '').localeCompare(b.job_title || '', 'ru'));
     } else if (sort === 'salary') {
       list.sort((a, b) => dbOperations.parseSalary(b.salary) - dbOperations.parseSalary(a.salary));
@@ -691,8 +715,14 @@ export const dbOperations = {
 
   workerMatchesFilters: (worker, filters = {}) => {
     if (filters.city) {
+      const wanted = locate(filters.city);
       const city = (worker.city || '').toLowerCase();
-      if (!city.includes(String(filters.city).toLowerCase())) return false;
+      const place = locate(worker.city);
+      if (wanted && place) {
+        if (place.name !== wanted.name) return false;
+      } else if (!city.includes(String(wanted?.name || filters.city).toLowerCase())) {
+        return false;
+      }
     }
     if (filters.specialization) {
       const spec = String(filters.specialization).toLowerCase();
@@ -726,6 +756,16 @@ export const dbOperations = {
       });
     if (filters.recommended) {
       ranked = ranked.filter(w => w.recommended);
+    }
+    const origin = filters.near || null;
+    ranked = ranked.map((worker) => withDistance(worker, worker.city, origin));
+    if (filters.sort === 'distance') {
+      ranked.sort((a, b) => {
+        if (a.distance_km == null && b.distance_km == null) return 0;
+        if (a.distance_km == null) return 1;
+        if (b.distance_km == null) return -1;
+        return a.distance_km - b.distance_km;
+      });
     }
     return ranked;
   },

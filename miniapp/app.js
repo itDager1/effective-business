@@ -17,8 +17,8 @@ const state = {
   staffCompany: '',
   staffDetail: null,
   myWork: { jobs: [], offers: [] },
-  filters: { seasonality: '', location: '', keyword: '', sort: 'new' },
-  workerFilters: { specialization: '', city: '', skills: '', ageMin: '', ageMax: '', gosuslugi: false, recommended: false },
+  filters: { seasonality: '', location: '', keyword: '', sort: 'new', near: '' },
+  workerFilters: { specialization: '', city: '', skills: '', ageMin: '', ageMax: '', gosuslugi: false, recommended: false, near: '', sort: '' },
   toast: '',
   cropper: null
 };
@@ -166,6 +166,11 @@ function profileSourceBadge(worker) {
   </div>`;
 }
 
+function cityOptions(id) {
+  const cities = state.me?.cities || [];
+  return `<datalist id="${id}">${cities.map((city) => `<option value="${escapeHtml(city)}">`).join('')}</datalist>`;
+}
+
 function jobCard(job, index, total) {
   if (!job) return `<div class="empty">Вакансий пока нет</div>`;
   return `
@@ -176,6 +181,7 @@ function jobCard(job, index, total) {
       <div class="meta">
         ${escapeHtml(job.company_name)} · ${escapeHtml(job.location)} · ${escapeHtml(job.salary)}<br>
         Сезонность: ${escapeHtml(job.seasonality)}
+        ${job.distance_label ? `<br>${escapeHtml(job.distance_label)}` : ''}
       </div>
       <p>${escapeHtml(job.description)}</p>
       <div class="meta">Требования: ${escapeHtml(job.requirements)}</div>
@@ -204,6 +210,7 @@ function workerCard(worker, index, total) {
       <h2>${escapeHtml(worker.full_name)}</h2>
       <div class="meta">
         ${escapeHtml(worker.age)} лет · ${escapeHtml(worker.city || 'город не указан')} · ${escapeHtml(worker.specialization)}<br>
+        ${worker.distance_label ? `${escapeHtml(worker.distance_label)}<br>` : ''}
         Опыт: ${escapeHtml(worker.experience)}<br>
         Образование: ${escapeHtml(worker.education || 'не указано')}<br>
         Навыки: ${escapeHtml(worker.skills || 'не указаны')}<br>
@@ -254,13 +261,18 @@ function workerHome() {
         ).join('')}
       </div>
       <label>Город
-        <input id="loc" value="${escapeHtml(f.location)}" placeholder="Калининград">
+        <input id="loc" list="ru-cities" value="${escapeHtml(f.location)}" placeholder="Казань">
       </label>
+      <label>Расстояние от
+        <input id="near" list="ru-cities" value="${escapeHtml(f.near)}" placeholder="${escapeHtml(state.me?.home_city ? `как в профиле: ${state.me.home_city}` : 'Москва')}">
+      </label>
+      ${cityOptions('ru-cities')}
       <label>Сортировка
         <select id="sort">
           <option value="new" ${f.sort === 'new' ? 'selected' : ''}>Сначала новые</option>
           <option value="salary" ${f.sort === 'salary' ? 'selected' : ''}>По зарплате</option>
           <option value="title" ${f.sort === 'title' ? 'selected' : ''}>По названию</option>
+          <option value="distance" ${f.sort === 'distance' ? 'selected' : ''}>По удалённости</option>
         </select>
       </label>
       <div class="row"><button class="btn primary" data-act="search">Показать вакансии</button></div>
@@ -547,7 +559,6 @@ function vacanciesScreen() {
 function workersScreen() {
   const worker = state.workers[state.workerIndex];
   const f = state.workerFilters;
-  const cities = state.me.worker_cities || [];
   const specs = state.me.worker_specializations || [];
   return shell('Анкеты', `${state.workers.length}`, `
     <div class="card form">
@@ -557,8 +568,17 @@ function workersScreen() {
         <datalist id="wf-specs">${specs.map((s) => `<option value="${escapeHtml(s)}">`).join('')}</datalist>
       </label>
       <label>Город
-        <input id="wf-city" list="wf-cities" value="${escapeHtml(f.city)}" placeholder="Калининград">
-        <datalist id="wf-cities">${cities.map((c) => `<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        <input id="wf-city" list="ru-cities" value="${escapeHtml(f.city)}" placeholder="Казань">
+      </label>
+      <label>Расстояние от
+        <input id="wf-near" list="ru-cities" value="${escapeHtml(f.near)}" placeholder="${escapeHtml(state.me?.home_city ? `как в профиле: ${state.me.home_city}` : 'Москва')}">
+      </label>
+      ${cityOptions('ru-cities')}
+      <label>Сортировка
+        <select id="wf-sort">
+          <option value="" ${f.sort !== 'distance' ? 'selected' : ''}>Сначала рекомендуемые</option>
+          <option value="distance" ${f.sort === 'distance' ? 'selected' : ''}>По удалённости</option>
+        </select>
       </label>
       <label>Навыки
         <input id="wf-skills" value="${escapeHtml(f.skills)}" placeholder="Excel, вождение, английский">
@@ -736,6 +756,8 @@ async function loadWorkers() {
   if (f.ageMax) q.set('ageMax', f.ageMax);
   if (f.gosuslugi) q.set('gosuslugi', '1');
   if (f.recommended) q.set('recommended', '1');
+  if (f.near) q.set('near', f.near);
+  if (f.sort) q.set('sort', f.sort);
   const data = await api(`/api/workers?${q}`);
   state.workers = data.items || [];
   state.workerIndex = 0;
@@ -748,7 +770,9 @@ function readWorkerFiltersFromForm() {
     city: document.getElementById('wf-city')?.value.trim() || '',
     skills: document.getElementById('wf-skills')?.value.trim() || '',
     ageMin: document.getElementById('wf-age-min')?.value || '',
-    ageMax: document.getElementById('wf-age-max')?.value || ''
+    ageMax: document.getElementById('wf-age-max')?.value || '',
+    near: document.getElementById('wf-near')?.value.trim() || '',
+    sort: document.getElementById('wf-sort')?.value || ''
   };
 }
 
@@ -886,6 +910,7 @@ app.addEventListener('click', async (e) => {
     if (act === 'search') {
       state.filters.keyword = document.getElementById('kw')?.value || '';
       state.filters.location = document.getElementById('loc')?.value || '';
+      state.filters.near = document.getElementById('near')?.value || '';
       state.filters.sort = document.getElementById('sort')?.value || 'new';
       await loadJobs();
       toast(`Найдено: ${state.jobs.length}`);
@@ -925,7 +950,7 @@ app.addEventListener('click', async (e) => {
       toast(state.workers.length ? `Анкет: ${state.workers.length}` : 'По фильтрам анкет нет');
       render();
     } else if (act === 'wreset') {
-      state.workerFilters = { specialization: '', city: '', skills: '', ageMin: '', ageMax: '', gosuslugi: false, recommended: false };
+      state.workerFilters = { specialization: '', city: '', skills: '', ageMin: '', ageMax: '', gosuslugi: false, recommended: false, near: '', sort: '' };
       await loadWorkers();
       toast(`Все анкеты: ${state.workers.length}`);
       render();

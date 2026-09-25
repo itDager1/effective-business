@@ -19,6 +19,7 @@ import {
   isGosuslugiVerified,
   profileSourceLabel
 } from './esia.js';
+import { cityNames, interpretCity, locate } from './cities.js';
 import {
   incomingMatchText,
   matchActionKeyboard,
@@ -422,6 +423,16 @@ function authUser(req) {
   return null;
 }
 
+function canonicalCity(value) {
+  if (!value) return { ok: true, name: null };
+  const parsed = interpretCity(value);
+  if (!parsed.ok) {
+    const extra = parsed.choices?.length ? ` Варианты: ${parsed.choices.map((city) => city.name).join(', ')}.` : '';
+    return { ok: false, error: `${parsed.error}${extra}` };
+  }
+  return { ok: true, name: parsed.city?.name || null };
+}
+
 function snapshot(userId) {
   dbOperations.addUser(userId, null);
   const user = dbOperations.getUser(userId);
@@ -441,6 +452,8 @@ function snapshot(userId) {
     locations: dbOperations.getUniqueLocations(userId),
     worker_cities: dbOperations.getUniqueWorkerCities(userId),
     worker_specializations: dbOperations.getUniqueSpecializations(userId),
+    cities: cityNames(),
+    home_city: locate(dbOperations.homePlace(userId))?.name || '',
     esia_available: esiaConfigured()
   };
 }
@@ -610,11 +623,28 @@ async function handleApi(req, res, url) {
       sendJson(res, 403, { error: 'Работодатель смотрит свои вакансии в разделе «Мои вакансии»' });
       return;
     }
+    const location = canonicalCity(url.searchParams.get('location'));
+    if (!location.ok) {
+      sendJson(res, 400, { error: location.error });
+      return;
+    }
+    const near = canonicalCity(url.searchParams.get('near'));
+    if (!near.ok) {
+      sendJson(res, 400, { error: near.error });
+      return;
+    }
+    const sort = url.searchParams.get('sort') || 'new';
+    const origin = near.name || dbOperations.homePlace(userId);
+    if (sort === 'distance' && !locate(origin)) {
+      sendJson(res, 400, { error: 'Чтобы сортировать по удалённости, выберите город России в поле «Расстояние от».' });
+      return;
+    }
     const list = dbOperations.filterVacancies({
       seasonality: url.searchParams.get('seasonality') || null,
-      location: url.searchParams.get('location') || null,
+      location: location.name,
       keyword: url.searchParams.get('keyword') || null,
-      sort: url.searchParams.get('sort') || 'new',
+      sort,
+      near: origin,
       excludeEmployerId: userId
     }).map((v) => ({
       ...publicVacancy(v),
@@ -730,14 +760,32 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && pathname === '/api/workers') {
+    const city = canonicalCity(url.searchParams.get('city'));
+    if (!city.ok) {
+      sendJson(res, 400, { error: city.error });
+      return;
+    }
+    const near = canonicalCity(url.searchParams.get('near'));
+    if (!near.ok) {
+      sendJson(res, 400, { error: near.error });
+      return;
+    }
+    const sort = url.searchParams.get('sort') || '';
+    const origin = near.name || dbOperations.homePlace(userId);
+    if (sort === 'distance' && !locate(origin)) {
+      sendJson(res, 400, { error: 'Чтобы сортировать по удалённости, выберите город России в поле «Расстояние от».' });
+      return;
+    }
     const filters = {
       specialization: url.searchParams.get('specialization') || null,
-      city: url.searchParams.get('city') || null,
+      city: city.name,
       skills: url.searchParams.get('skills') || null,
       ageMin: url.searchParams.get('ageMin') || null,
       ageMax: url.searchParams.get('ageMax') || null,
       gosuslugi: url.searchParams.get('gosuslugi') === '1',
-      recommended: url.searchParams.get('recommended') === '1'
+      recommended: url.searchParams.get('recommended') === '1',
+      sort,
+      near: origin
     };
     const items = dbOperations.getRankedWorkers(userId, filters).map((w) => ({
       ...publicWorker(w, userId),

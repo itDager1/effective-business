@@ -16,7 +16,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY bot.js db.js photo.js phone.js egrul.js esia.js miniapp-server.js disable-tls.js match-flow.js staff-flow.js ./
+COPY bot.js db.js cities.js photo.js phone.js egrul.js esia.js miniapp-server.js disable-tls.js match-flow.js staff-flow.js ./
 COPY miniapp ./miniapp
 
 RUN mkdir -p /app/miniapp/uploads /app/data

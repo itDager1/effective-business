@@ -7,6 +7,7 @@ import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './p
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
 import { isMeaningfulText, validatePhone } from './phone.js';
 import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
+import { interpretCity, locate, popularCities } from './cities.js';
 import {
   formatMatchTitle,
   incomingMatchText,
@@ -47,11 +48,12 @@ const DEDUP_TIMEOUT = 2 * 60 * 1000;
 const SORT_LABELS = {
   new: 'Сначала новые',
   salary: 'По зарплате',
-  title: 'По названию'
+  title: 'По названию',
+  distance: 'По удалённости'
 };
 
 function emptyWorkerFilters() {
-  return { specialization: null, city: null, ageMin: null, ageMax: null, skills: null, gosuslugi: false, recommended: false };
+  return { specialization: null, city: null, ageMin: null, ageMax: null, skills: null, gosuslugi: false, recommended: false, near: null, sort: null };
 }
 
 function getWorkerFilters(userId) {
@@ -69,13 +71,21 @@ function formatAgeFilter(filters) {
   return `до ${filters.ageMax}`;
 }
 
-function formatWorkerFiltersText(filters) {
+function originCaption(filters, userId) {
+  if (filters.near) return filters.near;
+  const home = locate(dbOperations.homePlace(userId));
+  return home ? `${home.name} (из профиля)` : 'не задан';
+}
+
+function formatWorkerFiltersText(filters, userId) {
   return `Специальность: ${filters.specialization || 'все'}\n` +
     `Город: ${filters.city || 'все'}\n` +
+    `Расстояние от: ${originCaption(filters, userId)}\n` +
     `Возраст: ${formatAgeFilter(filters)}\n` +
     `Навыки: ${filters.skills || 'все'}\n` +
     `Госуслуги: ${filters.gosuslugi ? 'только подтверждённые' : 'все'}\n` +
-    `Под вакансии: ${filters.recommended ? 'только рекомендуемые' : 'все'}`;
+    `Под вакансии: ${filters.recommended ? 'только рекомендуемые' : 'все'}\n` +
+    `Сортировка: ${filters.sort === 'distance' ? 'по удалённости' : 'сначала рекомендуемые'}`;
 }
 
 function setJobFilters(userId, filters) {
@@ -83,14 +93,24 @@ function setJobFilters(userId, filters) {
 }
 
 function getJobFilters(userId) {
-  return userStates.get(`${userId}_job_filters`) || { seasonality: null, location: null, keyword: null, sort: 'new' };
+  return userStates.get(`${userId}_job_filters`) || { seasonality: null, location: null, keyword: null, sort: 'new', near: null };
 }
 
-function formatFiltersText(filters) {
+function formatFiltersText(filters, userId) {
   return `Сезонность: ${filters.seasonality || 'все'}\n` +
     `Город: ${filters.location || 'все'}\n` +
+    `Расстояние от: ${originCaption(filters, userId)}\n` +
     `Специальность: ${filters.keyword || 'не задана'}\n` +
     `Сортировка: ${SORT_LABELS[filters.sort] || SORT_LABELS.new}`;
+}
+
+function searchFilters(userId, filters) {
+  return { ...filters, near: filters.near || dbOperations.homePlace(userId) || null };
+}
+
+function distanceReady(userId, filters) {
+  if (filters.sort !== 'distance') return true;
+  return Boolean(locate(filters.near || dbOperations.homePlace(userId)));
 }
 
 function miniAppUrl() {
@@ -504,6 +524,7 @@ function formatWorkerCardText(worker, index, total, viewerId = null) {
     `Имя: ${worker.full_name}\n` +
     `Возраст: ${worker.age}\n` +
     `Город: ${worker.city || 'не указан'}\n` +
+    `${worker.distance_label ? `${worker.distance_label}\n` : ''}` +
     `Специальность: ${worker.specialization}\n` +
     `Опыт: ${worker.experience}\n` +
     `Образование: ${worker.education || 'не указано'}\n` +
@@ -614,7 +635,7 @@ async function showCurrentWorker(ctx, employerId) {
 }
 
 function startWorkerSearch(employerId) {
-  const list = dbOperations.getRankedWorkers(employerId, getWorkerFilters(employerId));
+  const list = dbOperations.getRankedWorkers(employerId, searchFilters(employerId, getWorkerFilters(employerId)));
   userStates.set(employerId, 'browsing_workers');
   userStates.set(`${employerId}_workers_list`, list);
   userStates.set(`${employerId}_worker_index`, 0);
@@ -636,6 +657,10 @@ function workerFiltersKeyboard() {
             { type: 'callback', text: 'Навыки', payload: 'wfilter_skills' }
           ],
           [
+            { type: 'callback', text: 'От города', payload: 'wfilter_near' },
+            { type: 'callback', text: 'По удалённости', payload: 'wfilter_sort_distance' }
+          ],
+          [
             { type: 'callback', text: 'Госуслуги', payload: 'wfilter_gosu' },
             { type: 'callback', text: 'Под вакансии', payload: 'wfilter_rec' }
           ],
@@ -651,7 +676,7 @@ function workerFiltersKeyboard() {
 }
 
 async function showWorkerFiltersMenu(ctx, userId) {
-  await ctx.reply(`🔎 Фильтры анкет\n\n${formatWorkerFiltersText(getWorkerFilters(userId))}`, workerFiltersKeyboard());
+  await ctx.reply(`🔎 Фильтры анкет\n\n${formatWorkerFiltersText(getWorkerFilters(userId), userId)}`, workerFiltersKeyboard());
 }
 
 async function showOwnProfile(ctx, userId) {
@@ -1562,6 +1587,7 @@ function formatVacancyCard(vacancy, index, total) {
     `Описание: ${vacancy.description}\n` +
     `Требования: ${vacancy.requirements}\n` +
     `Место: ${vacancy.location}\n` +
+    `${vacancy.distance_label ? `${vacancy.distance_label}\n` : ''}` +
     `Зарплата: ${vacancy.salary}\n` +
     `Сезонность: ${vacancy.seasonality}\n` +
     `Контакт компании откроется после принятия отклика обеими сторонами.\n\n` +
@@ -1640,7 +1666,7 @@ async function denyEmployerVacancySearch(ctx) {
 
 function startJobSearch(userId) {
   const list = dbOperations.filterVacancies({
-    ...getJobFilters(userId),
+    ...searchFilters(userId, getJobFilters(userId)),
     excludeEmployerId: userId
   });
   userStates.set(userId, 'browsing_jobs');
@@ -1661,6 +1687,9 @@ function filtersKeyboard() {
             { type: 'callback', text: 'Город', payload: 'filter_location' }
           ],
           [
+            { type: 'callback', text: 'От города', payload: 'filter_near' }
+          ],
+          [
             { type: 'callback', text: 'Специальность', payload: 'filter_spec' },
             { type: 'callback', text: 'Сортировка', payload: 'filter_sort' }
           ],
@@ -1675,9 +1704,86 @@ function filtersKeyboard() {
   };
 }
 
+function cityPickKeyboard(backPayload, clearText) {
+  const buttons = [];
+  const popular = popularCities();
+  for (let i = 0; i < popular.length; i += 2) {
+    const row = [{ type: 'callback', text: popular[i].name, payload: `popcity_${i}` }];
+    if (popular[i + 1]) row.push({ type: 'callback', text: popular[i + 1].name, payload: `popcity_${i + 1}` });
+    buttons.push(row);
+  }
+  buttons.push([{ type: 'callback', text: clearText, payload: 'popcity_clear' }]);
+  buttons.push([{ type: 'callback', text: 'Назад', payload: backPayload }]);
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: { buttons }
+    }]
+  };
+}
+
+async function askCity(ctx, userId, mode) {
+  userStates.set(userId, mode);
+  userStates.set(`${userId}_city_mode`, mode);
+  const worker = mode.startsWith('worker');
+  const near = mode.endsWith('near');
+  await ctx.reply(
+    near
+      ? 'От какого города считать удалённость? Напишите город России или выберите из списка.'
+      : 'Какой город России оставить в фильтре? Напишите название или выберите из списка.',
+    cityPickKeyboard(worker ? 'worker_filters' : 'job_filters', near ? 'Как в профиле' : 'Все города')
+  );
+}
+
+function applyChosenCity(userId, mode, cityName) {
+  if (mode === 'job_city' || mode === 'job_near') {
+    const filters = getJobFilters(userId);
+    if (mode === 'job_city') filters.location = cityName;
+    else filters.near = cityName;
+    setJobFilters(userId, filters);
+    return 'jobs';
+  }
+  const filters = getWorkerFilters(userId);
+  if (mode === 'worker_city') filters.city = cityName;
+  else filters.near = cityName;
+  setWorkerFilters(userId, filters);
+  return 'workers';
+}
+
+async function finishCityPick(ctx, userId, mode, cityName) {
+  const kind = applyChosenCity(userId, mode, cityName);
+  userStates.set(userId, kind === 'jobs' ? 'browsing_jobs' : 'browsing_workers');
+  if (kind === 'jobs') await showFiltersMenu(ctx, userId);
+  else await showWorkerFiltersMenu(ctx, userId);
+}
+
+async function acceptCityText(ctx, userId, mode, text) {
+  const parsed = interpretCity(text);
+  if (!parsed.ok && parsed.choices) {
+    userStates.set(`${userId}_city_choices`, parsed.choices.map((city) => city.name));
+    await ctx.reply('Уточните город:', {
+      attachments: [{
+        type: 'inline_keyboard',
+        payload: {
+          buttons: [
+            ...parsed.choices.map((city, i) => ([{ type: 'callback', text: city.name, payload: `cityhit_${i}` }])),
+            [{ type: 'callback', text: 'Назад', payload: mode.startsWith('worker') ? 'worker_filters' : 'job_filters' }]
+          ]
+        }
+      }]
+    });
+    return;
+  }
+  if (!parsed.ok) {
+    await ctx.reply(parsed.error);
+    return;
+  }
+  await finishCityPick(ctx, userId, mode, parsed.city?.name || null);
+}
+
 async function showFiltersMenu(ctx, userId) {
   const filters = getJobFilters(userId);
-  await ctx.reply(`🔎 Фильтры поиска\n\n${formatFiltersText(filters)}`, filtersKeyboard());
+  await ctx.reply(`🔎 Фильтры поиска\n\n${formatFiltersText(filters, userId)}`, filtersKeyboard());
 }
 
 function formatOwnVacancyText(vacancy) {
@@ -2117,6 +2223,12 @@ bot.on('message_callback', async (ctx) => {
       await denyEmployerVacancySearch(ctx);
       return;
     }
+    const filters = getJobFilters(userId);
+    if (!distanceReady(userId, filters)) {
+      await ctx.reply('Чтобы сортировать по удалённости, укажите город России: кнопка «От города». Если город есть в анкете, он подставится сам.');
+      await askCity(ctx, userId, 'job_near');
+      return;
+    }
     const list = startJobSearch(userId);
     if (list.length === 0) {
       await ctx.reply('Нет доступных вакансий по выбранным фильтрам.', {
@@ -2310,43 +2422,35 @@ bot.on('message_callback', async (ctx) => {
   }
 
   if (payload === 'filter_location') {
-    const locations = dbOperations.getUniqueLocations(userId);
-    if (locations.length === 0) {
-      await ctx.reply('Пока нет городов в вакансиях.', filtersKeyboard());
-      return;
-    }
-    userStates.set(`${userId}_filter_locations`, locations);
-    const locationButtons = locations.slice(0, 10).map((loc, i) => ([{
-      type: 'callback',
-      text: loc,
-      payload: `filter_loc_${i}`
-    }]));
-    await ctx.reply('Выберите город:', {
-      attachments: [{
-        type: 'inline_keyboard',
-        payload: {
-          buttons: [
-            [{ type: 'callback', text: 'Все города', payload: 'filter_loc_all' }],
-            ...locationButtons,
-            [{ type: 'callback', text: 'Назад к фильтрам', payload: 'job_filters' }]
-          ]
-        }
-      }]
-    });
+    await askCity(ctx, userId, 'job_city');
     return;
   }
 
-  if (payload === 'filter_loc_all' || /^filter_loc_\d+$/.test(payload || '')) {
-    const filters = getJobFilters(userId);
-    if (payload === 'filter_loc_all') {
-      filters.location = null;
-    } else {
-      const locations = userStates.get(`${userId}_filter_locations`) || [];
-      const locIndex = Number(payload.replace('filter_loc_', ''));
-      filters.location = locations[locIndex] || filters.location;
+  if (payload === 'filter_near') {
+    await askCity(ctx, userId, 'job_near');
+    return;
+  }
+
+  if (payload === 'popcity_clear' || /^popcity_\d+$/.test(payload || '') || /^cityhit_\d+$/.test(payload || '')) {
+    const mode = userStates.get(`${userId}_city_mode`);
+    if (!mode) {
+      await ctx.reply('Откройте фильтры ещё раз и выберите город.');
+      return;
     }
-    setJobFilters(userId, filters);
-    await showFiltersMenu(ctx, userId);
+    if (payload === 'popcity_clear') {
+      await finishCityPick(ctx, userId, mode, null);
+      return;
+    }
+    if (payload.startsWith('popcity_')) {
+      const city = popularCities()[Number(payload.replace('popcity_', ''))];
+      if (!city) return;
+      await finishCityPick(ctx, userId, mode, city.name);
+      return;
+    }
+    const choices = userStates.get(`${userId}_city_choices`) || [];
+    const name = choices[Number(payload.replace('cityhit_', ''))];
+    if (!name) return;
+    await finishCityPick(ctx, userId, mode, name);
     return;
   }
 
@@ -2367,7 +2471,8 @@ bot.on('message_callback', async (ctx) => {
               { type: 'callback', text: 'По зарплате', payload: 'filter_sort_salary' }
             ],
             [
-              { type: 'callback', text: 'По названию', payload: 'filter_sort_title' }
+              { type: 'callback', text: 'По названию', payload: 'filter_sort_title' },
+              { type: 'callback', text: 'По удалённости', payload: 'filter_sort_distance' }
             ],
             [{ type: 'callback', text: 'Назад к фильтрам', payload: 'job_filters' }]
           ]
@@ -2377,21 +2482,27 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
 
-  if (payload === 'filter_sort_new' || payload === 'filter_sort_salary' || payload === 'filter_sort_title') {
+  if (payload === 'filter_sort_new' || payload === 'filter_sort_salary' || payload === 'filter_sort_title' || payload === 'filter_sort_distance') {
     const sortMap = {
       filter_sort_new: 'new',
       filter_sort_salary: 'salary',
-      filter_sort_title: 'title'
+      filter_sort_title: 'title',
+      filter_sort_distance: 'distance'
     };
     const filters = getJobFilters(userId);
     filters.sort = sortMap[payload];
     setJobFilters(userId, filters);
+    if (filters.sort === 'distance' && !distanceReady(userId, filters)) {
+      await ctx.reply('Город для расстояния не найден в профиле. Выберите, откуда считать.');
+      await askCity(ctx, userId, 'job_near');
+      return;
+    }
     await showFiltersMenu(ctx, userId);
     return;
   }
 
   if (payload === 'filter_reset') {
-    setJobFilters(userId, { seasonality: null, location: null, keyword: null, sort: 'new' });
+    setJobFilters(userId, { seasonality: null, location: null, keyword: null, sort: 'new', near: null });
     await showFiltersMenu(ctx, userId);
     return;
   }
@@ -2548,9 +2659,14 @@ bot.on('message_callback', async (ctx) => {
   }
 
   if (payload === 'wfilter_apply') {
-    const list = startWorkerSearch(userId);
     const filters = getWorkerFilters(userId);
-    const active = filters.specialization || filters.city || filters.ageMin != null || filters.ageMax != null || filters.skills || filters.gosuslugi || filters.recommended;
+    if (!distanceReady(userId, filters)) {
+      await ctx.reply('Чтобы сортировать по удалённости, укажите город России: кнопка «От города».');
+      await askCity(ctx, userId, 'worker_near');
+      return;
+    }
+    const list = startWorkerSearch(userId);
+    const active = filters.specialization || filters.city || filters.near || filters.sort === 'distance' || filters.ageMin != null || filters.ageMax != null || filters.skills || filters.gosuslugi || filters.recommended;
     if (list.length === 0) {
       await ctx.reply('По выбранным фильтрам анкет нет.', {
         attachments: [{
@@ -2568,7 +2684,7 @@ bot.on('message_callback', async (ctx) => {
       return;
     }
     await ctx.reply(active
-      ? `Найдено анкет: ${list.length}.\n${formatWorkerFiltersText(filters)}`
+      ? `Найдено анкет: ${list.length}.\n${formatWorkerFiltersText(filters, userId)}`
       : `Все анкеты: ${list.length}.`);
     await showCurrentWorker(ctx, userId);
     return;
@@ -2635,39 +2751,24 @@ bot.on('message_callback', async (ctx) => {
   }
 
   if (payload === 'wfilter_city') {
-    const cities = dbOperations.getUniqueWorkerCities(userId).slice(0, 10);
-    userStates.set(`${userId}_wfilter_cities`, cities);
-    const cityButtons = cities.map((city, i) => ([{
-      type: 'callback',
-      text: city,
-      payload: `wcity_${i}`
-    }]));
-    userStates.set(userId, 'wfilter_asking_city');
-    await ctx.reply('Выберите город или напишите свой. «-» — все города.', {
-      attachments: [{
-        type: 'inline_keyboard',
-        payload: {
-          buttons: [
-            ...cityButtons,
-            [{ type: 'callback', text: 'Все города', payload: 'wcity_all' }],
-            [{ type: 'callback', text: 'Назад к фильтрам', payload: 'worker_filters' }]
-          ]
-        }
-      }]
-    });
+    await askCity(ctx, userId, 'worker_city');
     return;
   }
 
-  if (payload === 'wcity_all' || /^wcity_\d+$/.test(payload || '')) {
+  if (payload === 'wfilter_near') {
+    await askCity(ctx, userId, 'worker_near');
+    return;
+  }
+
+  if (payload === 'wfilter_sort_distance') {
     const filters = getWorkerFilters(userId);
-    if (payload === 'wcity_all') {
-      filters.city = null;
-    } else {
-      const cities = userStates.get(`${userId}_wfilter_cities`) || [];
-      filters.city = cities[Number(payload.replace('wcity_', ''))] || filters.city;
-    }
+    filters.sort = filters.sort === 'distance' ? null : 'distance';
     setWorkerFilters(userId, filters);
-    userStates.set(userId, 'browsing_workers');
+    if (filters.sort === 'distance' && !distanceReady(userId, filters)) {
+      await ctx.reply('Город для расстояния не найден в профиле. Выберите, откуда считать.');
+      await askCity(ctx, userId, 'worker_near');
+      return;
+    }
     await showWorkerFiltersMenu(ctx, userId);
     return;
   }
@@ -3128,11 +3229,15 @@ bot.on('message_created', async (ctx) => {
   }
   if (!state) return;
 
-  if (state === 'wfilter_asking_spec' || state === 'wfilter_asking_city' || state === 'wfilter_asking_skills') {
+  if (state === 'job_city' || state === 'job_near' || state === 'worker_city' || state === 'worker_near') {
+    await acceptCityText(ctx, userId, state, text);
+    return;
+  }
+
+  if (state === 'wfilter_asking_spec' || state === 'wfilter_asking_skills') {
     const filters = getWorkerFilters(userId);
     const value = (!text || text === '-') ? null : text;
     if (state === 'wfilter_asking_spec') filters.specialization = value;
-    if (state === 'wfilter_asking_city') filters.city = value;
     if (state === 'wfilter_asking_skills') filters.skills = value;
     setWorkerFilters(userId, filters);
     userStates.set(userId, 'browsing_workers');
