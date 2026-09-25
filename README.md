@@ -29,6 +29,7 @@ HTTPS для домена: `bash scripts/enable-https.sh ваш-домен.ru` �
 
 - `BOT_TOKEN` — токен бота MAX
 - `MINI_APP_URL` — публичный `https://` адрес мини-приложения
+- `MINI_APP_OPEN_BUTTON=1` — кнопка «Открыть приложение» в меню бота. Пока URL не привязан к боту в кабинете MAX, кнопка ломает отправку меню, поэтому по умолчанию она выключена
 - `MINIAPP_DEV_USER_ID` — пользователь для локального открытия мини-приложения в браузере
 - `ESIA_CLIENT_ID`, `ESIA_REDIRECT_URI` (`https://домен/esia/callback`), `ESIA_CERT_HASH`, `ESIA_SIGNER_URL` — подключение к ЕСИА; кнопка «Подтвердить через Госуслуги» появляется, когда заданы все четыре. `ESIA_SIGNER_URL` принимает `{"data": base64}` и возвращает `{"signature": base64}` — открепленную подпись ГОСТ Р 34.10-2012 сертификатом информационной системы
 - `SFR_LABOR_BOOK_URL`, `SFR_LABOR_BOOK_TOKEN` — загрузка электронной трудовой книжки
@@ -46,4 +47,4 @@ HTTPS для домена: `bash scripts/enable-https.sh ваш-домен.ru` �
 
 ## Сдача
 
-Репозиторий с `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, README. Commit hash после дедлайна не меняется. На первом слайде презентации — ссылка на бота, репозиторий, hash и сценарий. Токен в git не хранится.
+Репозиторий с `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`, README. Commit hash после дедлайна не меняем. На первом слайде презентации — ссылка на бота, репозиторий, hash и сценарий. Токен в git не хранится.

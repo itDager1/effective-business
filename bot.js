@@ -31,9 +31,10 @@ const bot = new Bot(process.env.BOT_TOKEN);
 bot.catch(async (err, ctx) => {
   console.error('[BOT]', err);
   try {
-    await ctx.reply('Не получилось обработать сообщение. Попробуйте ещё раз.');
     const userId = ctx.user?.user_id;
-    if (userId) await replyRoleMenu(ctx, userId);
+    const text = 'Не получилось обработать сообщение. Попробуйте ещё раз.';
+    if (userId) await replyRoleMenu(ctx, userId, text);
+    else await ctx.reply(text);
   } catch (replyErr) {
     console.error('[BOT reply]', replyErr.message || replyErr);
   }
@@ -108,6 +109,7 @@ function isPublicHttpUrl(value) {
 }
 
 function miniAppOpenRow() {
+  if (process.env.MINI_APP_OPEN_BUTTON !== '1') return [];
   const url = miniAppUrl();
   if (!isPublicHttpUrl(url) || !url.startsWith('https://')) return [];
   return [[{ type: 'open_app', text: 'Открыть приложение', web_app: url }]];
@@ -858,12 +860,31 @@ function stepKeyboard(state) {
   return fillActionKeyboard(state);
 }
 
+function withoutOpenApp(extra) {
+  if (!extra?.attachments) return extra;
+  return {
+    ...extra,
+    attachments: extra.attachments.map((attachment) => {
+      if (attachment.type !== 'inline_keyboard') return attachment;
+      const buttons = (attachment.payload?.buttons || []).filter((row) => !row.some((button) => button.type === 'open_app'));
+      return { ...attachment, payload: { ...attachment.payload, buttons } };
+    })
+  };
+}
+
 async function safeReply(ctx, text, extra) {
   try {
     if (extra === undefined) return await ctx.reply(text);
     return await ctx.reply(text, extra);
   } catch (err) {
     console.error('[REPLY]', err.message || err);
+    if (extra && String(err.message || err).includes('Link not found')) {
+      try {
+        return await ctx.reply(text, withoutOpenApp(extra));
+      } catch (strippedErr) {
+        console.error('[REPLY stripped]', strippedErr.message || strippedErr);
+      }
+    }
     if (extra) {
       try {
         return await ctx.reply(text);
@@ -1893,14 +1914,14 @@ bot.on('message_callback', async (ctx) => {
   if (payload === 'employer') {
     dbOperations.updateUserRole(userId, 'employer');
     clearFillSession(userId);
-    await ctx.reply(roleWelcomeText('employer', Boolean(dbOperations.getEmployerProfile(userId))), employerMenuKeyboard(true, userId));
+    await safeReply(ctx, roleWelcomeText('employer', Boolean(dbOperations.getEmployerProfile(userId))), employerMenuKeyboard(true, userId));
     return;
   }
   
   if (payload === 'worker') {
     dbOperations.updateUserRole(userId, 'worker');
     clearFillSession(userId);
-    await ctx.reply(roleWelcomeText('worker', Boolean(dbOperations.getWorkerProfile(userId))), workerMenuKeyboard(true, userId));
+    await safeReply(ctx, roleWelcomeText('worker', Boolean(dbOperations.getWorkerProfile(userId))), workerMenuKeyboard(true, userId));
     return;
   }
   
