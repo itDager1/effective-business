@@ -39,7 +39,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'miniapp');
 const PORT = Number(process.env.MINI_APP_PORT || 8080);
 const MINI_APP_URL = (process.env.MINI_APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
-const BOT_TOKEN = process.env.BOT_TOKEN || '';
+const botToken = () => String(process.env.BOT_TOKEN || '').trim();
 const DEV_USER_ID = process.env.MINIAPP_DEV_USER_ID
   ? Number(process.env.MINIAPP_DEV_USER_ID)
   : 91134101;
@@ -58,29 +58,73 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
-function validateInitData(initData) {
-  if (!initData || !BOT_TOKEN) return null;
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function signInitData(pairs, token) {
+  const launchParams = [...pairs]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(token).digest();
+  return crypto.createHmac('sha256', secretKey).update(launchParams).digest('hex');
+}
+
+let lastInitDataWarning = '';
+function warnInitData(reason) {
+  if (reason === lastInitDataWarning) return;
+  lastInitDataWarning = reason;
+  console.warn(`[MINIAPP] initData отклонён: ${reason}`);
+}
+
+function validateInitData(rawInitData) {
+  const token = botToken();
+  if (!rawInitData) {
+    warnInitData('клиент не передал initData');
+    return null;
+  }
+  if (!token) {
+    warnInitData('BOT_TOKEN не задан');
+    return null;
+  }
+  let initData = String(rawInitData);
+  if (!initData.includes('hash=') && initData.includes('hash%3D')) initData = safeDecode(initData);
   const params = initData.split('&').map((pair) => {
     const i = pair.indexOf('=');
     return i === -1 ? [pair, ''] : [pair.slice(0, i), pair.slice(i + 1)];
   });
-  if (params.filter(([k]) => k === 'hash').length !== 1) return null;
-  const originalHash = decodeURIComponent(params.find(([k]) => k === 'hash')[1]);
-  const pairs = params
-    .filter(([k]) => k !== 'hash')
-    .map(([k, v]) => [k, decodeURIComponent(v)]);
-  pairs.sort((a, b) => a[0].localeCompare(b[0]));
-  const launchParams = pairs.map(([k, v]) => `${k}=${v}`).join('\n');
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
-  const hash = crypto.createHmac('sha256', secretKey).update(launchParams).digest('hex');
-  if (hash !== originalHash) return null;
-  const authDate = Number(pairs.find(([k]) => k === 'auth_date')?.[1] || 0);
-  if (authDate && Date.now() / 1000 - authDate > 24 * 60 * 60) return null;
+  if (params.filter(([k]) => k === 'hash').length !== 1) {
+    warnInitData(`нет поля hash (ключи: ${params.map(([k]) => k).join(',')})`);
+    return null;
+  }
+  const originalHash = safeDecode(params.find(([k]) => k === 'hash')[1]);
+  const rest = params.filter(([k]) => k !== 'hash');
+  const pairs = rest.map(([k, v]) => [k, safeDecode(v)]);
+  const plusPairs = rest.map(([k, v]) => [k, safeDecode(v.replace(/\+/g, ' '))]);
+  if (signInitData(pairs, token) !== originalHash && signInitData(plusPairs, token) !== originalHash) {
+    warnInitData(`подпись не совпала (ключи: ${rest.map(([k]) => k).join(',')})`);
+    return null;
+  }
+  let authDate = Number(pairs.find(([k]) => k === 'auth_date')?.[1] || 0);
+  if (authDate > 1e12) authDate /= 1000;
+  if (authDate && Date.now() / 1000 - authDate > 24 * 60 * 60) {
+    warnInitData('initData старше 24 часов');
+    return null;
+  }
   const userRaw = pairs.find(([k]) => k === 'user')?.[1];
-  if (!userRaw) return null;
+  if (!userRaw) {
+    warnInitData('в initData нет user');
+    return null;
+  }
   try {
     return JSON.parse(userRaw);
   } catch {
+    warnInitData('не удалось разобрать user');
     return null;
   }
 }
@@ -297,7 +341,7 @@ async function sendMaxMessage(userId, text, extra = {}) {
     const res = await fetch(`${MAX_API}/messages?${query}`, {
       method: 'POST',
       headers: {
-        Authorization: BOT_TOKEN,
+        Authorization: botToken(),
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ text, ...extra })
@@ -837,7 +881,9 @@ function serveStatic(req, res, url) {
       return;
     }
     const ext = path.extname(abs).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+    if (['.html', '.js', '.css'].includes(ext)) headers['Cache-Control'] = 'no-cache';
+    res.writeHead(200, headers);
     res.end(data);
   });
 }

@@ -28,8 +28,16 @@ const CROP_H = 360;
 const CROP_OUT_W = 900;
 const CROP_OUT_H = 1200;
 
+const launchInitData = (() => {
+  try {
+    return new URLSearchParams(window.location.hash.slice(1)).get('WebAppData') || '';
+  } catch {
+    return '';
+  }
+})();
+
 function initData() {
-  return WebApp?.initData || '';
+  return WebApp?.initData || launchInitData;
 }
 
 let pendingRequests = 0;
