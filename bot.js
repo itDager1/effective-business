@@ -475,13 +475,26 @@ function ownProfileButtons(profile) {
   ];
 }
 
+function formatCompanyEmploymentLine(jobs) {
+  if (!jobs?.length) return '';
+  const details = jobs.map((job) =>
+    job.job_title && job.job_title !== job.position
+      ? `${job.position} (вакансия «${job.job_title}»)`
+      : (job.position || job.job_title)
+  ).join(', ');
+  return `🏢 Этот человек уже работает у вас: ${details}\n`;
+}
+
 function formatWorkerCardText(worker, index, total, viewerId = null) {
   const recommended = worker.recommended ? '✅ Рекомендуемый кандидат\n' : '';
   const matchLine = worker.matchedVacancy
     ? `Подходит под вакансию: ${worker.matchedVacancy.job_title}\n`
     : '';
   const showPhone = viewerId && (viewerId === worker.user_id || dbOperations.contactsUnlocked(viewerId, worker.user_id));
-  return `${recommended}${matchLine}👤 Анкета работника\n` +
+  const staffJobs = viewerId && Number(viewerId) !== Number(worker.user_id)
+    ? dbOperations.getCompanyEmployment(viewerId, worker.user_id)
+    : [];
+  return `${formatCompanyEmploymentLine(staffJobs)}${recommended}${matchLine}👤 Анкета работника\n` +
     `${gosuslugiStatusLine(worker)}\n\n` +
     `Имя: ${worker.full_name}\n` +
     `Возраст: ${worker.age}\n` +

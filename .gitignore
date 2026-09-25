@@ -6,3 +6,8 @@ miniapp/uploads/
 hackathon-brief.pdf
 Эффективный бизнес.pdf
 presentation.pdf
+nginx/extra/*
+!nginx/extra/.gitkeep
+nginx/certbot/*
+!nginx/certbot/.gitkeep
+*.pdf

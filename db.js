@@ -808,6 +808,24 @@ export const dbOperations = {
     return dbOperations.decorateStaff(row);
   },
 
+  getCompanyEmployment: (employerId, workerId) => {
+    return (database.staff || [])
+      .filter((s) =>
+        Number(s.employer_id) === Number(employerId)
+        && Number(s.worker_id) === Number(workerId)
+        && s.status === 'active'
+      )
+      .map((s) => {
+        const vacancy = (database.vacancies || []).find((v) => v.id === s.vacancy_id);
+        const position = s.position || vacancy?.job_title || 'сотрудник';
+        return {
+          staff_id: s.id,
+          position,
+          job_title: vacancy?.job_title || position
+        };
+      });
+  },
+
   getCompanyStaff: (employerId) => {
     return (database.staff || [])
       .filter((s) => Number(s.employer_id) === Number(employerId) && s.status === 'active')

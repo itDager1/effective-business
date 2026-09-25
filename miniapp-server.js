@@ -115,10 +115,15 @@ function publicWorker(worker, viewerId = null) {
   if (!worker) return null;
   const { photo, gosuslugi, labor_book, phone, ...rest } = worker;
   const showPhone = viewerId != null && (viewerId === worker.user_id || dbOperations.contactsUnlocked(viewerId, worker.user_id));
+  const companyJobs = viewerId != null && Number(viewerId) !== Number(worker.user_id)
+    ? dbOperations.getCompanyEmployment(viewerId, worker.user_id)
+    : [];
   return {
     ...rest,
     phone: showPhone ? phone : null,
     phone_hidden: !showPhone,
+    in_company: companyJobs.length > 0,
+    company_jobs: companyJobs,
     photo: publicPhoto(photo),
     gosuslugi: gosuslugi?.connected
       ? {
