@@ -516,15 +516,16 @@ async function handleApi(req, res, url) {
     const { full_name, age, specialization, experience, phone, photo_url, city, education, skills, about } = body;
     const ageNum = Number(age);
     const phoneCheck = validatePhone(phone);
-    if (!full_name || !specialization || !experience || !phoneCheck.ok || !Number.isFinite(ageNum) || ageNum < 14 || ageNum > 100) {
-      sendJson(res, 400, { error: phoneCheck.ok ? 'Заполните имя, возраст 14–100, специальность, опыт и реальный телефон' : phoneCheck.error });
+    const experienceText = String(experience || '').trim();
+    if (!full_name || !specialization || !experienceText || !phoneCheck.ok || !Number.isFinite(ageNum) || ageNum < 14 || ageNum > 100) {
+      sendJson(res, 400, { error: phoneCheck.ok ? 'Заполните имя, возраст 14–100, специальность, опыт (хотя бы один символ) и реальный телефон' : phoneCheck.error });
       return;
     }
     const existing = dbOperations.getWorkerProfile(userId);
     const photo = photo_url
       ? { type: 'image', url: String(photo_url), token: null, photo_id: null }
       : existing?.photo || null;
-    dbOperations.addWorkerProfile(userId, full_name, ageNum, specialization, experience, phoneCheck.phone, photo, {
+    dbOperations.addWorkerProfile(userId, full_name, ageNum, specialization, experienceText, phoneCheck.phone, photo, {
       city, education, skills, about
     });
     dbOperations.updateUserRole(userId, 'worker');

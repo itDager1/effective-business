@@ -740,7 +740,7 @@ const WORKER_STEP_PROMPTS = {
   worker_asking_age: '2️⃣ Сколько вам лет?',
   worker_asking_city: '3️⃣ В каком городе вы ищете работу?',
   worker_asking_spec: '4️⃣ Ваша специальность?',
-  worker_asking_experience: '5️⃣ Опишите опыт работы: где работали, сколько лет, чем занимались.',
+  worker_asking_experience: '5️⃣ Опыт работы. Можно коротко: достаточно одного символа.',
   worker_asking_education: '6️⃣ Образование? Учебное заведение, специальность, год.',
   worker_asking_skills: '7️⃣ Ключевые навыки? Перечислите через запятую.',
   worker_asking_about: '8️⃣ Расскажите о себе, если хотите. Можно пропустить.',
@@ -3327,7 +3327,14 @@ bot.on('message_created', async (ctx) => {
     } else if (state === 'edit_field_1') editData.full_name = text;
     else if (state === 'edit_field_3') editData.city = text;
     else if (state === 'edit_field_4') editData.specialization = text;
-    else if (state === 'edit_field_5') editData.experience = text;
+    else if (state === 'edit_field_5') {
+      const experienceText = String(text || '').trim();
+      if (!experienceText) {
+        await ctx.reply('Напишите опыт работы. Достаточно одного символа.');
+        return;
+      }
+      editData.experience = experienceText;
+    }
     else if (state === 'edit_field_6') editData.education = text;
     else if (state === 'edit_field_7') editData.skills = text;
     saveWorker(userId, editData, editData.photo);
@@ -3385,11 +3392,12 @@ bot.on('message_created', async (ctx) => {
   }
   
   if (state === 'worker_asking_experience') {
-    if (!isMeaningfulText(text, 20)) {
-      await ctx.reply('Опишите опыт подробнее, не ограничивайтесь парой слов.');
+    const experienceText = String(text || '').trim();
+    if (!experienceText) {
+      await ctx.reply('Напишите опыт работы. Достаточно одного символа.');
       return;
     }
-    data.experience = text;
+    data.experience = experienceText;
     setFillState(userId, 'worker_asking_education', data);
     await promptProfileStep(ctx, 'worker_asking_education');
     return;

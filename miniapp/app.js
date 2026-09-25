@@ -386,7 +386,7 @@ function profileScreen() {
       <label>Возраст <input name="age" type="number" min="14" max="100" value="${escapeHtml(w.age)}" required></label>
       <label>Город <input name="city" value="${escapeHtml(w.city)}" required></label>
       <label>Специальность <input name="specialization" value="${escapeHtml(w.specialization)}" required></label>
-      <label>Опыт работы <textarea name="experience" required minlength="20">${escapeHtml(w.experience)}</textarea></label>
+      <label>Опыт работы <textarea name="experience" required minlength="1" placeholder="Достаточно одного символа">${escapeHtml(w.experience)}</textarea></label>
       <label>Образование <input name="education" value="${escapeHtml(w.education)}" required></label>
       <label>Навыки <input name="skills" value="${escapeHtml(w.skills)}" required></label>
       <label>О себе <textarea name="about" placeholder="Необязательно. Чем занимаетесь, какой опыт, какие задачи ищете">${escapeHtml(w.about)}</textarea></label>
