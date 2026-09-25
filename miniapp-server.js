@@ -6,15 +6,18 @@ import { fileURLToPath } from 'url';
 import { dbOperations } from './db.js';
 import { cropToPortrait34 } from './photo.js';
 import { isMeaningfulText, validatePhone } from './phone.js';
-import { isValidInn, vacancyGateMessage, verificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
+import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
 import {
   buildEsiaAuthUrl,
-  readEsiaState,
+  takeEsiaState,
   importEsiaPerson,
   notifyWorkerEsia,
   formatLaborBook,
   esiaConfigured,
-  esiaDemoEnabled
+  signEsiaLink,
+  verifyEsiaLink,
+  isGosuslugiVerified,
+  profileSourceLabel
 } from './esia.js';
 import {
   incomingMatchText,
@@ -169,15 +172,18 @@ function publicWorker(worker, viewerId = null) {
     in_company: companyJobs.length > 0,
     company_jobs: companyJobs,
     photo: publicPhoto(photo),
-    gosuslugi: gosuslugi?.connected
+    gosuslugi: isGosuslugiVerified(worker)
       ? {
           connected: true,
           verified: Boolean(gosuslugi.verified),
           birthdate: gosuslugi.birthdate || null,
-          source: gosuslugi.source || 'esia'
+          source: gosuslugi.source
         }
       : null,
-    labor_book: labor_book || null
+    profile_source: isGosuslugiVerified(worker) ? 'gosuslugi' : 'manual',
+    profile_source_label: profileSourceLabel(worker),
+    phone_verified: Boolean(worker.phone_verified),
+    labor_book: isGosuslugiVerified(worker) ? labor_book || null : null
   };
 }
 
@@ -234,7 +240,7 @@ function publicMatch(match, viewerId) {
     employer: employer ? {
       company_name: employer.company_name,
       industry: employer.industry,
-      verification_label: verificationLabel(employer),
+      verification_label: Number(employer.user_id) === Number(viewerId) ? verificationLabel(employer) : publicVerificationLabel(employer),
       company_verified: isEmployerVerified(employer)
     } : null,
     contacts: accepted ? {
@@ -266,55 +272,75 @@ function sendHtml(res, status, html) {
 async function handleEsia(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/esia/start') {
     const userId = Number(url.searchParams.get('uid'));
-    if (!userId) {
-      sendHtml(res, 400, htmlPage('Госуслуги', '<h2>Нет пользователя</h2><p class="muted">Откройте ссылку из бота.</p>'));
+    if (!userId || !verifyEsiaLink(userId, url.searchParams.get('sig'))) {
+      sendHtml(res, 400, htmlPage('Госуслуги', '<h2>Ссылка недействительна</h2><p class="muted">Откройте вход через Госуслуги из бота или мини-приложения.</p>'));
       return true;
     }
-    const { url: target } = buildEsiaAuthUrl(userId);
-    const location = target.startsWith('http') ? target : target;
-    res.writeHead(302, { Location: location });
-    res.end();
-    return true;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/esia/demo') {
-    const state = url.searchParams.get('state') || '';
-    sendHtml(res, 200, htmlPage('Госуслуги / ЕСИА', `
-      <h2>Вход через Госуслуги</h2>
-      <p class="muted">Это <strong>смоделированный вход</strong> для MVP: логин и пароль Госуслуг сюда не вводятся. Промышленный client_id ЕСИА ещё не подключён, поэтому анкета и электронная трудовая книжка заполняются тестовыми данными. В материалах хакатона это явно указано.</p>
-      <a href="/esia/callback?demo=1&state=${encodeURIComponent(state)}">Продолжить на тестовых данных</a>
-    `));
+    if (!esiaConfigured()) {
+      sendHtml(res, 503, htmlPage('Госуслуги', '<h2>Вход через Госуслуги недоступен</h2><p class="muted">Подключение к ЕСИА для сервиса ещё не активировано. Заполните анкету вручную — её можно подтвердить через Госуслуги позже.</p>'));
+      return true;
+    }
+    try {
+      const target = await buildEsiaAuthUrl(userId);
+      res.writeHead(302, { Location: target });
+      res.end();
+    } catch (err) {
+      console.error('[ESIA] start:', err);
+      sendHtml(res, 502, htmlPage('Госуслуги', '<h2>Госуслуги сейчас недоступны</h2><p class="muted">Попробуйте ещё раз через несколько минут.</p>'));
+    }
     return true;
   }
 
   if (req.method === 'GET' && url.pathname === '/esia/callback') {
-    const parsed = readEsiaState(url.searchParams.get('state'));
-    if (!parsed?.userId) {
+    const state = url.searchParams.get('state');
+    const pending = takeEsiaState(state);
+    if (!pending?.userId) {
       sendHtml(res, 400, htmlPage('Госуслуги', '<h2>Сессия устарела</h2><p class="muted">Вернитесь в бота и нажмите «Госуслуги» ещё раз.</p>'));
       return true;
     }
+    if (url.searchParams.get('error')) {
+      sendHtml(res, 400, htmlPage('Госуслуги', '<h2>Вход отменён</h2><p class="muted">Госуслуги не передали данные. Вернитесь в чат с ботом.</p>'));
+      return true;
+    }
     try {
-      const demo = url.searchParams.get('demo') === '1' || !url.searchParams.get('code');
-      const profile = await importEsiaPerson(parsed.userId, {
+      const profile = await importEsiaPerson(pending.userId, {
         code: url.searchParams.get('code'),
-        verifier: parsed.verifier,
-        demo
+        state
       });
       await notifyWorkerEsia(
-        parsed.userId,
-        `✅ Госуслуги подключены.\nАнкета заполнена: ${profile.full_name || '—'}\nЭлектронная трудовая книжка ${profile.labor_book?.records?.length ? 'загружена' : 'подключена'}.${demo ? '\n⚠️ Сейчас использованы тестовые данные ЕСИА, не промышленный контур.' : ''}`
+        pending.userId,
+        `✅ Госуслуги подключены.\nАнкета подтверждена: ${profile.full_name || '—'}${profile.labor_book?.records?.length ? '\nЭлектронная трудовая книжка загружена.' : ''}\nДопишите специальность и опыт, если их нет.`
       );
       sendHtml(res, 200, htmlPage('Готово', `
         <h2>Данные получены</h2>
-        <p class="muted">Анкета и электронная трудовая книжка обновлены. Вернитесь в чат с ботом.${demo ? ' Сейчас это тестовые данные ЕСИА.' : ''} Работодатели увидят опыт в анкете.</p>
+        <p class="muted">Анкета обновлена данными из Госуслуг. Вернитесь в чат с ботом — работодатели увидят, что анкета подтверждена.</p>
       `));
     } catch (err) {
       console.error('[ESIA]', err);
-      sendHtml(res, 500, htmlPage('Ошибка', `<h2>Не удалось получить данные</h2><p class="muted">${String(err.message || err)}</p>`));
+      sendHtml(res, 502, htmlPage('Ошибка', '<h2>Не удалось получить данные</h2><p class="muted">Госуслуги не вернули данные. Попробуйте ещё раз позже.</p>'));
     }
     return true;
   }
   return false;
+}
+
+export function gosuslugiStartUrl(userId) {
+  return `${MINI_APP_URL}/esia/start?uid=${Number(userId)}&sig=${signEsiaLink(userId)}`;
+}
+
+function verifyMaxPhone({ phone, authDate, hash }, userId) {
+  const token = botToken();
+  if (!token || !phone || !authDate || !hash) return null;
+  const digits = String(phone).replace(/\D/g, '');
+  const variants = [digits, String(phone)];
+  for (const value of variants) {
+    const data = `authDate=${authDate}\nphone=${value}\nuserId=${userId}`;
+    const given = String(hash).toLowerCase();
+    const signed = crypto.createHmac('sha256', token).update(data).digest('hex');
+    const signedSwapped = crypto.createHmac('sha256', data).update(token).digest('hex');
+    if (signed === given || signedSwapped === given) return `+${digits}`;
+  }
+  return null;
 }
 
 function publicVacancy(vacancy, viewerId = null) {
@@ -326,7 +352,7 @@ function publicVacancy(vacancy, viewerId = null) {
     ...(owned ? vacancy : safe),
     company_name: employer?.company_name || 'Компания не указана',
     company_verified: isEmployerVerified(employer),
-    verification_label: verificationLabel(employer),
+    verification_label: owned ? verificationLabel(employer) : publicVerificationLabel(employer),
     contacts_hidden: !owned
   };
 }
@@ -415,10 +441,7 @@ function snapshot(userId) {
     locations: dbOperations.getUniqueLocations(userId),
     worker_cities: dbOperations.getUniqueWorkerCities(userId),
     worker_specializations: dbOperations.getUniqueSpecializations(userId),
-    demo: {
-      esia: esiaDemoEnabled() && !esiaConfigured(),
-      egrul: String(process.env.EGRUL_DEMO).toLowerCase() === 'true'
-    }
+    esia_available: esiaConfigured()
   };
 }
 
@@ -440,9 +463,8 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && pathname === '/api/esia/link') {
-    const origin = MINI_APP_URL || `http://${req.headers.host}`;
     sendJson(res, 200, {
-      url: `${origin.replace(/\/$/, '')}/esia/start?uid=${userId}`,
+      url: gosuslugiStartUrl(userId),
       configured: esiaConfigured()
     });
     return;
@@ -459,8 +481,8 @@ async function handleApi(req, res, url) {
     const worker = dbOperations.getWorkerProfile(workerId);
     sendJson(res, 200, {
       text: formatLaborBook(worker),
-      labor_book: worker?.labor_book || null,
-      gosuslugi: worker?.gosuslugi?.connected || false
+      labor_book: isGosuslugiVerified(worker) ? worker.labor_book || null : null,
+      gosuslugi: isGosuslugiVerified(worker)
     });
     return;
   }
@@ -511,6 +533,21 @@ async function handleApi(req, res, url) {
       dbOperations.updateWorkerPhoto(userId, photo);
     }
     sendJson(res, 200, { ...snapshot(userId), uploaded_photo: photo });
+    return;
+  }
+
+  if (method === 'POST' && pathname === '/api/worker-phone/verify') {
+    if (!dbOperations.getWorkerProfile(userId)) {
+      sendJson(res, 404, { error: 'Сначала создайте анкету' });
+      return;
+    }
+    const phone = verifyMaxPhone(body, userId);
+    if (!phone) {
+      sendJson(res, 400, { error: 'MAX не подтвердил номер телефона' });
+      return;
+    }
+    dbOperations.setWorkerPhoneVerified(userId, phone);
+    sendJson(res, 200, snapshot(userId));
     return;
   }
 

@@ -3,7 +3,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dbPath = path.join(__dirname, 'data.json');
+const dbPath = process.env.DATA_FILE
+  ? path.resolve(process.env.DATA_FILE)
+  : path.join(__dirname, 'data.json');
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 let database = {
   users: [],
@@ -12,7 +15,11 @@ let database = {
   vacancies: [],
   favorites: [],
   applications: [],
-  offers: []
+  offers: [],
+  profile_drafts: [],
+  matches: [],
+  staff: [],
+  dev_offers: []
 };
 
 function loadDb() {
@@ -146,6 +153,7 @@ export const dbOperations = {
       existing.age = age;
       existing.specialization = specialization;
       existing.experience = experience;
+      if (existing.phone !== phone) existing.phone_verified = false;
       existing.phone = phone;
       Object.assign(existing, extraFields);
       if (photo !== undefined && photo !== null) existing.photo = photo;
@@ -166,6 +174,16 @@ export const dbOperations = {
       });
       saveDb();
     }
+  },
+
+  setWorkerPhoneVerified: (userId, phone) => {
+    const profile = database.workers.find(w => w.user_id === userId);
+    if (!profile) return null;
+    profile.phone = phone;
+    profile.phone_verified = true;
+    profile.phone_verified_at = new Date().toISOString();
+    saveDb();
+    return profile;
   },
 
   updateWorkerPhoto: (userId, photo) => {
@@ -195,7 +213,7 @@ export const dbOperations = {
         id: Date.now(),
         user_id: userId,
         full_name: data.full_name || '',
-        age: data.age || 18,
+        age: data.age || null,
         specialization: data.specialization || '',
         experience: data.experience || '',
         phone: data.phone || '',
@@ -214,7 +232,7 @@ export const dbOperations = {
     }
     profile.gosuslugi = {
       connected: true,
-      verified: true,
+      verified: data.trusted !== false,
       oid: data.oid || profile.gosuslugi?.oid || null,
       snils: data.snils || profile.gosuslugi?.snils || null,
       birthdate: data.birthdate || profile.gosuslugi?.birthdate || null,
@@ -286,6 +304,10 @@ export const dbOperations = {
   setEmployerVerification: (userId, verification) => {
     const profile = database.employers.find(e => e.user_id === userId);
     if (!profile) return null;
+    const keepVerified = verification?.status === 'unavailable'
+      && profile.verification?.status === 'verified'
+      && !profile.verification.demo;
+    if (keepVerified) return profile;
     profile.verification = verification;
     if (verification?.ogrn) profile.ogrn = verification.ogrn;
     if (verification?.fetched_name && !profile.company_name) {
@@ -298,6 +320,11 @@ export const dbOperations = {
   getEmployerProfile: (userId) => {
     return database.employers.find(e => e.user_id === userId) || null;
   },
+
+  getEmployersAwaitingVerification: () => database.employers.filter((e) =>
+    e.inn && e.director_fio && e.legal_address
+    && (!e.verification || ['pending', 'unavailable'].includes(e.verification.status) || e.verification.demo)
+  ),
 
   addVacancy: (employerId, jobTitle, description, requirements, location, salary, seasonality, contact = {}) => {
     const vacancy = {

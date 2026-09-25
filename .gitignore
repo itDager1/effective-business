@@ -11,3 +11,4 @@ nginx/extra/*
 nginx/certbot/*
 !nginx/certbot/.gitkeep
 *.pdf
+data/

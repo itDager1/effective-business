@@ -6,8 +6,9 @@ services:
       - .env
     environment:
       MINI_APP_PORT: "8080"
+      DATA_FILE: /app/data/data.json
     volumes:
-      - ./data.json:/app/data.json
+      - ./data:/app/data
       - ./miniapp/uploads:/app/miniapp/uploads
     expose:
       - "8080"

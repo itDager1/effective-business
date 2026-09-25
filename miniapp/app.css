@@ -93,6 +93,38 @@ body::before {
   color: #fb7185;
 }
 
+.source-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.source-badge {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.source-badge.ok {
+  background: rgba(94, 234, 212, 0.14);
+  border-color: rgba(94, 234, 212, 0.35);
+  color: var(--ok);
+}
+.source-badge.manual {
+  background: rgba(168, 176, 200, 0.12);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.cta-card {
+  border: 1px solid rgba(79, 99, 230, 0.45);
+  background: linear-gradient(135deg, rgba(79, 99, 230, 0.22), rgba(61, 139, 255, 0.08));
+}
+.cta-card .btn {
+  margin-top: 10px;
+  width: 100%;
+}
+
 .photo, .photo-placeholder {
   width: min(100%, 240px);
   aspect-ratio: 3 / 4;

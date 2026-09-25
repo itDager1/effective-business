@@ -125,11 +125,45 @@ function shell(title, badge, body, role, current) {
       <div class="badge">${escapeHtml(badge)}</div>
     </div>
     ${isLocalBrowser() ? '<div class="content" style="padding-bottom:0"><div class="meta">Локальный режим: http://localhost:8080</div></div>' : ''}
-    ${state.me?.demo?.esia || state.me?.demo?.egrul ? `<div class="content" style="padding-bottom:0"><div class="meta">Тестовые данные: ${[state.me?.demo?.esia ? 'ЕСИА/Госуслуги' : '', state.me?.demo?.egrul ? 'ЕГРЮЛ/ЕГРИП' : ''].filter(Boolean).join(', ')}. Это смоделированный контур MVP, не промышленная интеграция.</div></div>` : ''}
-    <div class="content">${body}</div>
+    <div class="content">${noProfileBanner(role)}${body}</div>
     ${nav(role, current)}
     ${state.toast ? `<div class="toast">${escapeHtml(state.toast)}</div>` : ''}
   `;
+}
+
+function hasOwnProfile(role = state.me?.role) {
+  return role === 'employer' ? Boolean(state.me?.employer) : Boolean(state.me?.worker);
+}
+
+function noProfileBanner(role) {
+  if (!role || hasOwnProfile(role)) return '';
+  const target = role === 'employer' ? 'home' : 'profile';
+  if (state.screen === target) return '';
+  const text = role === 'employer'
+    ? 'Анкеты можно смотреть без профиля. Чтобы размещать вакансии и приглашать людей, создайте профиль компании.'
+    : 'Вакансии можно смотреть без анкеты. Чтобы откликаться, создайте анкету.';
+  return `<div class="card cta-card">
+    <div class="meta">${text}</div>
+    <button class="btn primary" data-go="${target}">${role === 'employer' ? 'Создать профиль компании' : 'Создать анкету'}</button>
+  </div>`;
+}
+
+function requireProfile(action) {
+  if (hasOwnProfile()) return true;
+  const isEmployer = state.me?.role === 'employer';
+  state.screen = isEmployer ? 'home' : 'profile';
+  state.toast = `Чтобы ${action}, создайте ${isEmployer ? 'профиль компании' : 'анкету'}`;
+  render();
+  setTimeout(() => { state.toast = ''; render(); }, 2600);
+  return false;
+}
+
+function profileSourceBadge(worker) {
+  const fromGosuslugi = worker?.profile_source === 'gosuslugi';
+  return `<div class="source-badges">
+    <span class="source-badge ${fromGosuslugi ? 'ok' : 'manual'}">${fromGosuslugi ? '🏛 Подтверждено через Госуслуги' : '✍️ Заполнено вручную · Госуслуги не подключены'}</span>
+    ${worker?.phone_verified ? '<span class="source-badge ok">📱 Телефон подтверждён в MAX</span>' : ''}
+  </div>`;
 }
 
 function jobCard(job, index, total) {
@@ -138,7 +172,7 @@ function jobCard(job, index, total) {
     <div class="card">
       <div class="meta">${index + 1} из ${total}</div>
       <h2>${escapeHtml(job.job_title)}</h2>
-      <div class="${job.company_verified ? 'rec' : 'warn'}">${escapeHtml(job.verification_label || 'Компания ещё не проверена по ЕГРЮЛ/ЕГРИП')}</div>
+      <div class="${job.company_verified ? 'rec' : 'warn'}">${escapeHtml(job.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div>
       <div class="meta">
         ${escapeHtml(job.company_name)} · ${escapeHtml(job.location)} · ${escapeHtml(job.salary)}<br>
         Сезонность: ${escapeHtml(job.seasonality)}
@@ -162,9 +196,10 @@ function workerCard(worker, index, total) {
   if (!worker) return `<div class="empty">Анкет не найдено</div>`;
   return `
     <div class="card">
+      ${worker.in_company ? `<div class="rec">🏢 Уже работает у вас: ${escapeHtml((worker.company_jobs || []).map((j) => j.position).join(', '))}</div>` : ''}
       ${worker.recommended ? '<div class="rec">Рекомендуемый кандидат</div>' : ''}
       ${photoTag(worker.photo)}
-      <div class="${worker.gosuslugi?.connected || worker.gosuslugi?.verified ? 'rec' : 'warn'}">${worker.gosuslugi?.connected || worker.gosuslugi?.verified ? '✅ Данные из Госуслуг подтверждены' : '⚠️ Данные из Госуслуг не подтверждены'}</div>
+      ${profileSourceBadge(worker)}
       <div class="meta">${index + 1} из ${total}</div>
       <h2>${escapeHtml(worker.full_name)}</h2>
       <div class="meta">
@@ -195,7 +230,7 @@ function roleScreen() {
     <div class="top"><h1>Кто вы?</h1></div>
     <div class="content">
       <div class="card">
-        <p class="meta">Один аккаунт может быть и работником, и работодателем. Роль можно сменить в любой момент.</p>
+        <p class="meta">Один аккаунт может быть и работником, и работодателем. Роль можно сменить в любой момент. Профиль можно создать сразу или позже — смотреть вакансии и анкеты можно и без него.</p>
         <div class="row">
           <button class="btn primary" data-role="worker">Работник</button>
           <button class="btn" data-role="employer">Работодатель</button>
@@ -262,8 +297,8 @@ function matchBlock(m) {
       <div class="meta">${m.incoming ? 'входящий' : 'ваш отклик'}</div>
       <h2>${escapeHtml(m.title)}</h2>
       <div class="meta">Статус: ${escapeHtml(m.status_label)}</div>
-      ${m.worker ? `<div class="${m.worker.gosuslugi?.connected || m.worker.gosuslugi?.verified ? 'rec' : 'warn'}">${m.worker.gosuslugi?.connected || m.worker.gosuslugi?.verified ? '✅ Данные из Госуслуг подтверждены' : '⚠️ Данные из Госуслуг не подтверждены'}</div>` : ''}
-      ${m.employer ? `<div class="${m.employer.company_verified ? 'rec' : 'warn'}">${escapeHtml(m.employer.verification_label || 'Компания ещё не проверена по ЕГРЮЛ/ЕГРИП')}</div>` : ''}
+      ${m.worker ? profileSourceBadge(m.worker) : ''}
+      ${m.employer ? `<div class="${m.employer.company_verified ? 'rec' : 'warn'}">${escapeHtml(m.employer.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div>` : ''}
       ${contacts}
       ${pending}
       ${accepted}
@@ -277,6 +312,7 @@ function matchesScreen() {
     return shell('Анкета соискателя', 'Одобренный отклик', `
       <div class="card">
         ${photoTag(w.photo)}
+        ${profileSourceBadge(w)}
         <h2>${escapeHtml(w.full_name)}</h2>
         <div class="meta">
           ${escapeHtml(w.age)} лет · ${escapeHtml(w.city || 'город не указан')}<br>
@@ -302,14 +338,30 @@ function matchesScreen() {
   `, role, 'matches');
 }
 
+function verificationCard(w, exists) {
+  const fromGosuslugi = w.profile_source === 'gosuslugi';
+  const esia = state.me.esia_available
+    ? `<div class="row"><button class="btn ${fromGosuslugi ? 'ghost' : 'primary'}" data-act="esia">${fromGosuslugi ? 'Обновить данные из Госуслуг' : 'Подтвердить через Госуслуги'}</button></div>`
+    : '';
+  const canVerifyPhone = exists && !w.phone_verified && typeof window.WebApp?.requestContact === 'function';
+  return `<div class="card">
+    <h2>Подтверждение анкеты</h2>
+    ${exists ? profileSourceBadge(w) : ''}
+    <div class="meta">${fromGosuslugi
+      ? 'ФИО и возраст взяты из Госуслуг — работодатели видят, что анкета подтверждена.'
+      : 'Работодатели видят, как создана анкета: через Госуслуги или вручную.'}</div>
+    ${esia}
+    ${canVerifyPhone ? '<div class="row"><button class="btn" data-act="verify-phone">Подтвердить телефон через MAX</button></div>' : ''}
+  </div>`;
+}
+
 function profileScreen() {
+  const exists = Boolean(state.me.worker);
   const w = state.me.worker || {};
-  return shell('Мой профиль', w.is_active ? 'Анкета активна' : 'Анкета скрыта', `
-    ${photoTag(w.photo)}
-    <div class="card">
-      <div class="meta">${w.gosuslugi?.connected ? '✅ Госуслуги подключены. Анкета и ЭТК заполняются автоматически.' : 'Подключите Госуслуги, чтобы заполнить ФИО, возраст, телефон и электронную трудовую книжку.'}</div>
-      <div class="row"><button class="btn primary" data-act="esia">Войти через Госуслуги</button></div>
-    </div>
+  return shell(exists ? 'Мой профиль' : 'Новая анкета', exists ? (w.is_active ? 'Анкета активна' : 'Анкета скрыта') : 'Не создана', `
+    ${exists ? '' : '<div class="card cta-card"><h2>Создайте анкету</h2><div class="meta">После сохранения можно откликаться на вакансии и получать приглашения от работодателей.</div></div>'}
+    ${photoTag(w.photo || state.pendingPhoto)}
+    ${verificationCard(w, exists)}
     ${w.labor_book?.records?.length ? `<div class="card"><h2>Электронная трудовая книжка</h2><div class="meta">${w.labor_book.records.map((r) => `${escapeHtml(r.position)} · ${escapeHtml(r.organization)} (${escapeHtml(r.started_at)} — ${escapeHtml(r.ended_at || 'н.в.')})`).join('<br>')}</div></div>` : ''}
     <div class="photo-actions">
       <label class="btn primary">
@@ -327,21 +379,24 @@ function profileScreen() {
       <label>Навыки <input name="skills" value="${escapeHtml(w.skills)}" required></label>
       <label>О себе <textarea name="about" placeholder="Необязательно. Чем занимаетесь, какой опыт, какие задачи ищете">${escapeHtml(w.about)}</textarea></label>
       <label>Телефон <input name="phone" value="${escapeHtml(w.phone)}" required placeholder="+7 921 123-45-67 или +375 29 123-45-67"></label>
-      <input type="hidden" name="photo_url" value="${escapeHtml(w.photo?.url)}">
-      <button class="btn primary" type="submit">Сохранить</button>
+      <input type="hidden" name="photo_url" value="${escapeHtml(w.photo?.url || state.pendingPhoto?.url)}">
+      <button class="btn primary" type="submit">${exists ? 'Сохранить' : 'Создать анкету'}</button>
     </form>
     <div class="row">
-      <button class="btn ghost" data-act="toggle">${w.is_active ? 'Скрыть анкету' : 'Включить анкету'}</button>
+      ${exists ? `<button class="btn ghost" data-act="toggle">${w.is_active ? 'Скрыть анкету' : 'Включить анкету'}</button>` : ''}
       <button class="btn ghost" data-go="switch">Сменить роль</button>
     </div>
   `, 'worker', 'profile');
 }
 
 function employerHome() {
+  const exists = Boolean(state.me.employer);
   const e = state.me.employer || {};
-  return shell('Компания', 'Работодатель', `
+  const verified = e.verification?.status === 'verified';
+  return shell('Компания', exists ? 'Работодатель' : 'Профиль не создан', `
+    ${exists ? '' : '<div class="card cta-card"><h2>Создайте профиль компании</h2><div class="meta">После сохранения сверим ИНН, руководителя и юридический адрес с ЕГРЮЛ/ЕГРИП ФНС. Если данные не совпадут, в ваших вакансиях будет видно, что компания не подтверждена.</div></div>'}
     <form class="card form" id="employer-form">
-      <div class="meta">${escapeHtml(e.verification_label || 'Компания ещё не проверена по ЕГРЮЛ/ЕГРИП')}</div>
+      ${exists ? `<div class="${verified ? 'rec' : 'warn'}">${escapeHtml(e.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div>` : ''}
       <label>Название <input name="company_name" value="${escapeHtml(e.company_name)}" required></label>
       <label>Отрасль <input name="industry" value="${escapeHtml(e.industry)}" required></label>
       <label>О компании <textarea name="description" required minlength="40">${escapeHtml(e.description)}</textarea></label>
@@ -350,9 +405,9 @@ function employerHome() {
       <label>ФИО руководителя / ИП <input name="director_fio" value="${escapeHtml(e.director_fio)}" required></label>
       <label>Контактное лицо <input name="contact_person" value="${escapeHtml(e.contact_person)}" required></label>
       <label>Телефон <input name="phone" value="${escapeHtml(e.phone)}" required placeholder="+7 921 123-45-67 или +48 501 234 567"></label>
-      <button class="btn primary" type="submit">Сохранить и проверить</button>
+      <button class="btn primary" type="submit">${exists ? 'Сохранить и проверить' : 'Создать и проверить по ЕГРЮЛ'}</button>
     </form>
-    <div class="row"><button class="btn ghost" data-act="egrul">Проверить по ЕГРЮЛ/ЕГРИП</button></div>
+    ${exists ? '<div class="row"><button class="btn ghost" data-act="egrul">Проверить по ЕГРЮЛ/ЕГРИП</button></div>' : ''}
     <div class="row"><button class="btn ghost" data-go="switch">Сменить роль</button></div>
   `, 'employer', 'home');
 }
@@ -371,8 +426,8 @@ function vacancyFields(v = {}, submitLabel) {
         </select>
       </label>
       <div class="meta">Контакт сотрудника для связи. Соискатель увидит его только после взаимного одобрения.</div>
-      <label>Имя сотрудника <input name="contact_name" value="${escapeHtml(v.contact_name)}" required placeholder="Анна Иванова"></label>
-      <label>Должность сотрудника <input name="contact_position" value="${escapeHtml(v.contact_position)}" required placeholder="руководитель смены"></label>
+      <label>Имя сотрудника <input name="contact_name" value="${escapeHtml(v.contact_name)}" required placeholder="Имя и фамилия"></label>
+      <label>Должность сотрудника <input name="contact_position" value="${escapeHtml(v.contact_position)}" required placeholder="Кем работает этот сотрудник"></label>
       <label>Телефон сотрудника <input name="contact_phone" value="${escapeHtml(v.contact_phone)}" required placeholder="+7 921 123-45-67"></label>
       <button class="btn primary" type="submit">${submitLabel}</button>`;
 }
@@ -417,7 +472,6 @@ function staffScreen() {
   }
   const items = state.staff || [];
   return shell('Кадры', state.staffCompany || 'Штат', `
-    ${state.me.employer ? '' : '<div class="card"><div class="meta">Сначала заполните профиль компании на вкладке «Компания» — затем здесь появится ваш штат.</div></div>'}
     <div class="staff-hero">
       <div class="staff-kicker">Учёт кадров</div>
       <h2>${escapeHtml(state.staffCompany || 'Компания')}</h2>
@@ -475,9 +529,13 @@ function vacanciesScreen() {
       ${vacancyFields(v, 'Сохранить изменения')}
     </form>
   `).join('') || '<div class="empty">Вакансии ещё не размещены</div>';
-  const canPost = state.me.employer?.can_post_vacancies;
+  const employer = state.me.employer;
+  if (!employer) {
+    return shell('Мои вакансии', '0', '', 'employer', 'vacancies');
+  }
+  const verified = employer.verification?.status === 'verified';
   return shell('Мои вакансии', `${state.myVacancies.length}`, `
-    ${canPost ? '' : `<div class="card"><div class="meta">Сначала заполните профиль компании — затем можно размещать вакансии.</div></div>`}
+    ${verified ? '' : `<div class="card"><div class="warn">${escapeHtml(employer.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div><div class="meta">Вакансии публикуются, но соискатели видят пометку «Компания не подтверждена». Исправьте данные на вкладке «Компания» и проверьте снова.</div></div>`}
     <form class="card form" id="vacancy-form">
       <h2>Новая вакансия</h2>
       ${vacancyFields({}, 'Разместить')}
@@ -624,9 +682,10 @@ async function loadMe() {
   results
     .filter((r) => r.status === 'rejected')
     .forEach((r) => console.warn('[miniapp]', r.reason?.message || r.reason));
-  if (state.me.role === 'worker' && !state.me.worker && state.screen === 'home') {
-    state.screen = 'profile';
+  if (state.me.role === 'employer' && !state.me.employer && state.screen === 'home' && !state.booted) {
+    state.screen = 'workers';
   }
+  state.booted = true;
   render();
 }
 
@@ -785,17 +844,36 @@ app.addEventListener('click', async (e) => {
       if (state.cropper.src) URL.revokeObjectURL(state.cropper.src);
       state.cropper = null;
       state.me = data;
-      if (data.uploaded_photo) {
-        state.me.worker = { ...(state.me.worker || {}), photo: data.uploaded_photo };
-      }
-      toast('Фото обновлено');
+      if (data.uploaded_photo && !state.me.worker) state.pendingPhoto = data.uploaded_photo;
+      toast(state.me.worker ? 'Фото обновлено' : 'Фото добавится к анкете после сохранения');
       render();
       return;
     }
     if (act === 'esia') {
       const data = await api('/api/esia/link');
+      if (!data.configured) {
+        toast('Вход через Госуслуги пока недоступен');
+        return;
+      }
       if (window.WebApp?.openLink) window.WebApp.openLink(data.url);
       else window.location.href = data.url;
+      return;
+    }
+    if (act === 'verify-phone') {
+      let contact;
+      try {
+        contact = await window.WebApp.requestContact();
+      } catch {
+        toast('MAX не передал номер телефона');
+        return;
+      }
+      if (!contact?.phone || contact.error) {
+        toast('Номер не подтверждён: доступ к телефону не выдан');
+        return;
+      }
+      state.me = await api('/api/worker-phone/verify', { method: 'POST', body: JSON.stringify(contact) });
+      toast('Телефон подтверждён в MAX');
+      render();
       return;
     }
     if (act === 'labor') {
@@ -829,6 +907,7 @@ app.addEventListener('click', async (e) => {
       toast(res.is_favorite ? 'Добавлено в избранное' : 'Удалено из избранного');
       render();
     } else if (act === 'apply') {
+      if (!requireProfile('откликнуться')) return;
       const list = state.screen === 'fav' ? state.favorites : state.jobs;
       const job = list[state.screen === 'fav' ? state.favIndex : state.jobIndex];
       await api(`/api/jobs/${job.id}/apply`, { method: 'POST' });
@@ -865,8 +944,10 @@ app.addEventListener('click', async (e) => {
         : (state.workerIndex - 1 + state.workers.length) % state.workers.length;
       render();
     } else if (act === 'offer') {
+      if (!requireProfile('пригласить работника')) return;
       const worker = state.workers[state.workerIndex];
       if (!state.myVacancies.length) {
+        state.screen = 'vacancies';
         toast('Сначала разместите вакансию');
         return;
       }
@@ -937,8 +1018,9 @@ app.addEventListener('click', async (e) => {
       toast(accept ? 'Предложение принято' : 'Предложение отклонено');
       render();
     } else if (act === 'egrul') {
+      toast('Сверяем данные с ЕГРЮЛ/ЕГРИП…');
       state.me = await api('/api/employer-verify', { method: 'POST', body: '{}' });
-      toast(state.me.employer?.can_post_vacancies ? 'Компания подтверждена' : (state.me.verification?.error || 'Проверка не пройдена'));
+      toast(state.me.verification?.ok ? 'Компания подтверждена по реестру ФНС' : `Компания не подтверждена: ${state.me.verification?.error || 'данные не совпали с реестром'}`);
       render();
     }
   } catch (err) {
@@ -950,12 +1032,16 @@ app.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
     if (e.target.id === 'worker-form') {
+      const created = !state.me.worker;
       state.me = await api('/api/worker-profile', { method: 'POST', body: JSON.stringify(formData(e.target)) });
-      toast('Профиль сохранён');
+      state.pendingPhoto = null;
+      toast(created ? 'Анкета создана — теперь можно откликаться' : 'Профиль сохранён');
       render();
     } else if (e.target.id === 'employer-form') {
+      toast('Сохраняем и сверяем с ЕГРЮЛ/ЕГРИП…');
       state.me = await api('/api/employer-profile', { method: 'POST', body: JSON.stringify(formData(e.target)) });
-      toast(state.me.employer?.can_post_vacancies ? 'Профиль сохранён и подтверждён' : (state.me.verification?.error || 'Профиль сохранён, проверка не пройдена'));
+      toast(state.me.verification?.ok ? 'Профиль сохранён, компания подтверждена по реестру ФНС' : `Профиль сохранён, компания не подтверждена: ${state.me.verification?.error || 'данные не совпали с реестром'}`);
+      await Promise.allSettled([loadMyVacancies(), loadStaff()]);
       render();
     } else if (e.target.id === 'vacancy-form') {
       const data = await api('/api/vacancies', { method: 'POST', body: JSON.stringify(formData(e.target)) });

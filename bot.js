@@ -2,11 +2,11 @@ import './disable-tls.js';
 import 'dotenv/config';
 import { Bot } from '@maxhub/max-bot-api';
 import { dbOperations } from './db.js';
-import { startMiniAppServer } from './miniapp-server.js';
+import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
-import { formatLaborBook, gosuslugiStatusLine } from './esia.js';
+import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
 import { isMeaningfulText, validatePhone } from './phone.js';
-import { isValidInn, vacancyGateMessage, verificationLabel, verifyEmployerRegistry } from './egrul.js';
+import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import {
   formatMatchTitle,
   incomingMatchText,
@@ -113,8 +113,12 @@ function miniAppOpenRow() {
   return [[{ type: 'open_app', text: 'Открыть приложение', web_app: url }]];
 }
 
-function workerMenuKeyboard(includeSwitch = false) {
-  const buttons = [
+function workerMenuKeyboard(includeSwitch = false, userId = null) {
+  const buttons = [];
+  if (userId && !dbOperations.getWorkerProfile(userId)) {
+    buttons.push([{ type: 'callback', text: '📝 Создать анкету', payload: 'create_profile' }]);
+  }
+  buttons.push(
     [
       { type: 'callback', text: 'Найти работу', payload: 'find_jobs' },
       { type: 'callback', text: 'Мой профиль', payload: 'view_profile' }
@@ -128,7 +132,7 @@ function workerMenuKeyboard(includeSwitch = false) {
       { type: 'callback', text: 'Фильтры', payload: 'job_filters' }
     ],
     ...miniAppOpenRow()
-  ];
+  );
   if (includeSwitch) {
     buttons.push([{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]);
   }
@@ -142,6 +146,9 @@ function workerMenuKeyboard(includeSwitch = false) {
 
 function employerMenuKeyboard(includeSwitch = false, userId = null) {
   const buttons = [];
+  if (userId && !dbOperations.getEmployerProfile(userId)) {
+    buttons.push([{ type: 'callback', text: '🏢 Создать профиль компании', payload: 'create_profile' }]);
+  }
   if (userId && dbOperations.getVacancyDraft(userId)) {
     buttons.push([{ type: 'callback', text: 'Продолжить вакансию', payload: 'resume_vacancy' }]);
   }
@@ -174,7 +181,7 @@ function employerMenuKeyboard(includeSwitch = false, userId = null) {
 async function replyRoleMenu(ctx, userId, text = 'Что дальше?') {
   const user = dbOperations.getUser(userId);
   if (user?.role === 'worker') {
-    await safeReply(ctx, text, workerMenuKeyboard(true));
+    await safeReply(ctx, text, workerMenuKeyboard(true, userId));
     return;
   }
   if (user?.role === 'employer') {
@@ -344,11 +351,6 @@ async function sendToUserWithPhoto(api, userId, text, extra = {}, photo = null, 
   }
 }
 
-function gosuslugiStartUrl(userId) {
-  const origin = miniAppUrl();
-  return `${origin}/esia/start?uid=${userId}`;
-}
-
 function workerExtras(data) {
   return {
     city: data.city || '',
@@ -414,7 +416,7 @@ async function finishEmployerProfileCreation(ctx, userId, data) {
     await safeReply(ctx, `✅ Компания подтверждена по ${reg}. Теперь можно размещать вакансии.`);
   } else {
     const errText = String(result.error || 'Данные не совпали с реестром.').slice(0, 400);
-    await safeReply(ctx, `Профиль компании сохранён.\nПроверка реестра: ${errText}\nВакансии будут доступны после успешной проверки.`);
+    await safeReply(ctx, `Профиль компании сохранён, но компания не подтверждена.\nПроверка ЕГРЮЛ/ЕГРИП: ${errText}\nВакансии размещать можно — соискатели увидят в них пометку «Компания не подтверждена».`);
   }
   await safeReply(ctx, 'Что вы хотите сделать?', {
     attachments: [{
@@ -460,14 +462,15 @@ function ownProfileButtons(profile) {
         { type: 'callback', text: 'Включить профиль', payload: 'activate_profile' },
         { type: 'callback', text: 'Удалить профиль', payload: 'delete_profile_confirm' }
       ];
+  const esiaRow = esiaConfigured() && isPublicHttpUrl(gosuslugiStartUrl(profile.user_id))
+    ? [[{
+        type: 'link',
+        text: isGosuslugiVerified(profile) ? 'Обновить данные из Госуслуг' : 'Подтвердить через Госуслуги',
+        url: gosuslugiStartUrl(profile.user_id)
+      }]]
+    : [];
   return [
-    [{
-      type: isPublicHttpUrl(gosuslugiStartUrl(profile.user_id)) ? 'link' : 'callback',
-      text: profile.gosuslugi?.connected ? 'Госуслуги ✓' : 'Войти через Госуслуги',
-      ...(isPublicHttpUrl(gosuslugiStartUrl(profile.user_id))
-        ? { url: gosuslugiStartUrl(profile.user_id) }
-        : { payload: 'esia_local' })
-    }],
+    ...esiaRow,
     [{ type: 'callback', text: 'Заменить фото', payload: 'replace_photo' }],
     statusRow,
     [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }],
@@ -544,6 +547,10 @@ function employerProfileButtons() {
 
 async function denyUnverifiedVacancy(ctx, userId) {
   const profile = dbOperations.getEmployerProfile(userId);
+  if (!profile) {
+    await askToCreateProfile(ctx, userId, 'разместить вакансию');
+    return true;
+  }
   const message = vacancyGateMessage(profile);
   if (!message) return false;
   await ctx.reply(message, {
@@ -926,7 +933,7 @@ async function cancelProfileFill(ctx, userId) {
   }
   const user = dbOperations.getUser(userId);
   if (user?.role === 'worker' && worker) {
-    await ctx.reply('Заполнение анкеты работника отменено.', workerMenuKeyboard(true));
+    await ctx.reply('Заполнение анкеты работника отменено.', workerMenuKeyboard(true, userId));
     return;
   }
   if (user?.role === 'employer' && employer) {
@@ -937,24 +944,58 @@ async function cancelProfileFill(ctx, userId) {
   await ctx.reply('Заполнение отменено. Кем хотите быть?', roleChoiceKeyboard());
 }
 
-async function ensureProfileFilling(ctx, userId) {
+async function startProfileCreation(ctx, userId) {
   const user = dbOperations.getUser(userId);
   if (user?.role === 'worker' && dbOperations.getWorkerProfile(userId)) return false;
   if (user?.role === 'employer' && dbOperations.getEmployerProfile(userId)) return false;
   if (await maybeOfferIncompleteProfile(ctx, userId, user?.role)) return true;
-  if (user?.role === 'worker' && !dbOperations.getWorkerProfile(userId)) {
+  if (user?.role === 'worker') {
     setFillState(userId, 'worker_asking_name', {});
-    await ctx.reply('Анкета работника ещё не заполнена. Начнём с первого пункта.');
+    const esiaHint = esiaConfigured()
+      ? '\nМожно заполнить вручную или подтвердить данные через Госуслуги в профиле.'
+      : '';
+    await ctx.reply(`Создаём анкету работника.${esiaHint}`);
     await promptProfileStep(ctx, 'worker_asking_name');
     return true;
   }
-  if (user?.role === 'employer' && !dbOperations.getEmployerProfile(userId)) {
+  if (user?.role === 'employer') {
     setFillState(userId, 'employer_asking_company', {});
-    await ctx.reply('Анкета компании ещё не заполнена. Начнём с первого пункта.');
+    await ctx.reply('Создаём профиль компании. После заполнения сверим ИНН, руководителя и адрес с ЕГРЮЛ/ЕГРИП.');
     await promptProfileStep(ctx, 'employer_asking_company');
     return true;
   }
   return false;
+}
+
+function createProfileKeyboard(role) {
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [{ type: 'callback', text: role === 'employer' ? '🏢 Создать профиль компании' : '📝 Создать анкету', payload: 'create_profile' }],
+          [{ type: 'callback', text: 'Назад в меню', payload: 'back_to_menu' }]
+        ]
+      }
+    }]
+  };
+}
+
+async function askToCreateProfile(ctx, userId, action) {
+  const role = dbOperations.getUser(userId)?.role;
+  const what = role === 'employer' ? 'профиль компании' : 'анкету';
+  await ctx.reply(`Чтобы ${action}, создайте ${what}. Смотреть ${role === 'employer' ? 'анкеты' : 'вакансии'} можно и без неё.`, createProfileKeyboard(role));
+}
+
+function roleWelcomeText(role, hasProfile) {
+  if (role === 'employer') {
+    return hasProfile
+      ? 'Роль: работодатель.'
+      : 'Роль: работодатель. Анкеты работников можно смотреть сразу. Чтобы размещать вакансии и приглашать людей, создайте профиль компании.';
+  }
+  return hasProfile
+    ? 'Роль: работник.'
+    : 'Роль: работник. Вакансии можно смотреть сразу. Чтобы откликаться, создайте анкету.';
 }
 
 async function offerResumeOrRestart(ctx, userId, draft) {
@@ -1496,7 +1537,7 @@ function formatVacancyCard(vacancy, index, total) {
   return `💼 Вакансия\n\n` +
     `Должность: ${vacancy.job_title}\n` +
     `Компания: ${company}\n` +
-    `${verificationLabel(employer)}\n` +
+    `${publicVerificationLabel(employer)}\n` +
     `Описание: ${vacancy.description}\n` +
     `Требования: ${vacancy.requirements}\n` +
     `Место: ${vacancy.location}\n` +
@@ -1817,11 +1858,16 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
   
+  if (payload === 'create_profile') {
+    clearFillSession(userId);
+    if (!(await startProfileCreation(ctx, userId))) await replyRoleMenu(ctx, userId, 'Профиль уже создан.');
+    return;
+  }
+
   if (payload === 'continue_with_role') {
-    if (await ensureProfileFilling(ctx, userId)) return;
     const user = dbOperations.getUser(userId);
     if (user?.role === 'worker') {
-      await ctx.reply('Что вы хотите сделать?', workerMenuKeyboard(true));
+      await ctx.reply('Что вы хотите сделать?', workerMenuKeyboard(true, userId));
     } else if (user?.role === 'employer') {
       if (await maybeOfferIncompleteVacancy(ctx, userId)) return;
       await ctx.reply('Что вы хотите сделать?', employerMenuKeyboard(true, userId));
@@ -1844,36 +1890,17 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
 
-  if (payload === 'esia_local') {
-    await ctx.reply(`Госуслуги: откройте в браузере на этом компьютере\n${gosuslugiStartUrl(userId)}`);
-    return;
-  }
-  
   if (payload === 'employer') {
     dbOperations.updateUserRole(userId, 'employer');
     clearFillSession(userId);
-    if (dbOperations.getEmployerProfile(userId)) {
-      await ctx.reply('Роль: работодатель.', employerMenuKeyboard(true, userId));
-      return;
-    }
-    if (await maybeOfferIncompleteProfile(ctx, userId, 'employer')) return;
-    setFillState(userId, 'employer_asking_company', {});
-    await ctx.reply('Ваша роль: Работодатель. Заполните профиль компании.');
-    await promptProfileStep(ctx, 'employer_asking_company');
+    await ctx.reply(roleWelcomeText('employer', Boolean(dbOperations.getEmployerProfile(userId))), employerMenuKeyboard(true, userId));
     return;
   }
   
   if (payload === 'worker') {
     dbOperations.updateUserRole(userId, 'worker');
     clearFillSession(userId);
-    if (dbOperations.getWorkerProfile(userId)) {
-      await ctx.reply('Роль: работник.', workerMenuKeyboard(true));
-      return;
-    }
-    if (await maybeOfferIncompleteProfile(ctx, userId, 'worker')) return;
-    setFillState(userId, 'worker_asking_name', {});
-    await ctx.reply('Ваша роль: Работник. Заполните ваш профиль.');
-    await promptProfileStep(ctx, 'worker_asking_name');
+    await ctx.reply(roleWelcomeText('worker', Boolean(dbOperations.getWorkerProfile(userId))), workerMenuKeyboard(true, userId));
     return;
   }
   
@@ -1901,9 +1928,8 @@ bot.on('message_callback', async (ctx) => {
   }
   
   if (payload === 'keep_role') {
-    if (await ensureProfileFilling(ctx, userId)) return;
     const user = dbOperations.getUser(userId);
-    if (user?.role === 'worker') await ctx.reply('Роль сохранена.', workerMenuKeyboard());
+    if (user?.role === 'worker') await ctx.reply('Роль сохранена.', workerMenuKeyboard(false, userId));
     else if (user?.role === 'employer') {
       if (await maybeOfferIncompleteVacancy(ctx, userId)) return;
       await ctx.reply('Роль сохранена.', employerMenuKeyboard(false, userId));
@@ -1962,10 +1988,7 @@ bot.on('message_callback', async (ctx) => {
     } else {
       dbOperations.updateUserRole(userId, 'employer');
       clearFillSession(userId);
-      if (await maybeOfferIncompleteProfile(ctx, userId, 'employer')) return;
-      setFillState(userId, 'employer_asking_company', {});
-      await ctx.reply('Ваша роль: Работодатель. Заполните профиль компании.');
-      await promptProfileStep(ctx, 'employer_asking_company');
+      await ctx.reply(roleWelcomeText('employer', false), employerMenuKeyboard(true, userId));
     }
     return;
   }
@@ -1996,10 +2019,7 @@ bot.on('message_callback', async (ctx) => {
     } else {
       dbOperations.updateUserRole(userId, 'worker');
       clearFillSession(userId);
-      if (await maybeOfferIncompleteProfile(ctx, userId, 'worker')) return;
-      setFillState(userId, 'worker_asking_name', {});
-      await ctx.reply('Ваша роль: Работник. Заполните ваш профиль.');
-      await promptProfileStep(ctx, 'worker_asking_name');
+      await ctx.reply(roleWelcomeText('worker', false), workerMenuKeyboard(true, userId));
     }
     return;
   }
@@ -2014,7 +2034,7 @@ bot.on('message_callback', async (ctx) => {
   if (payload === 'use_existing_worker') {
     clearFillSession(userId);
     dbOperations.updateUserRole(userId, 'worker');
-    await ctx.reply('Роль изменена на работника. Что вы хотите сделать?', workerMenuKeyboard(true));
+    await ctx.reply('Роль изменена на работника. Что вы хотите сделать?', workerMenuKeyboard(true, userId));
     return;
   }
   
@@ -2053,7 +2073,7 @@ bot.on('message_callback', async (ctx) => {
   if (payload === 'verify_egrul') {
     const profile = dbOperations.getEmployerProfile(userId);
     if (!profile) {
-      await ctx.reply('Сначала заполните профиль компании.');
+      await askToCreateProfile(ctx, userId, 'пройти проверку ЕГРЮЛ/ЕГРИП');
       return;
     }
     if (!profile.inn || !profile.director_fio || !profile.legal_address) {
@@ -2066,7 +2086,7 @@ bot.on('message_callback', async (ctx) => {
       const reg = result.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ';
       await ctx.reply(`✅ Компания подтверждена по ${reg}.\n${result.fetched_name || ''}\nМожно размещать вакансии.`);
     } else {
-      await ctx.reply(`❌ Проверка не пройдена.\n${result.error || 'ФИО руководителя или юридический адрес не совпали с реестром.'}`);
+      await ctx.reply(`❌ Проверка не пройдена — компания не подтверждена.\n${result.error || 'ФИО руководителя или юридический адрес не совпали с реестром.'}\nВ ваших вакансиях соискатели видят пометку «Компания не подтверждена».`);
     }
     return;
   }
@@ -2193,7 +2213,7 @@ bot.on('message_callback', async (ctx) => {
       return;
     }
     if (!dbOperations.getWorkerProfile(userId)) {
-      await ctx.reply('Сначала заполните свою анкету, затем откликайтесь.');
+      await askToCreateProfile(ctx, userId, 'откликнуться на вакансию');
       return;
     }
     if (dbOperations.hasApplied(userId, vacancy.id)) {
@@ -2356,7 +2376,10 @@ bot.on('message_callback', async (ctx) => {
   }
   
   if (payload === 'view_profile') {
-    if (await ensureProfileFilling(ctx, userId)) return;
+    if (!dbOperations.getWorkerProfile(userId)) {
+      await ctx.reply('Анкеты пока нет. Создайте её, чтобы откликаться на вакансии и получать приглашения.', createProfileKeyboard('worker'));
+      return;
+    }
     await showOwnProfile(ctx, userId);
     return;
   }
@@ -2428,7 +2451,7 @@ bot.on('message_callback', async (ctx) => {
   if (payload === 'view_employer_profile') {
     const profile = dbOperations.getEmployerProfile(userId);
     if (!profile) {
-      await ctx.reply('Профиль компании не найден.');
+      await ctx.reply('Профиля компании пока нет. Создайте его, чтобы размещать вакансии и приглашать работников.', createProfileKeyboard('employer'));
       return;
     }
     
@@ -2729,6 +2752,10 @@ bot.on('message_callback', async (ctx) => {
     const worker = list[index];
     if (!worker) {
       await ctx.reply('Анкета не найдена.');
+      return;
+    }
+    if (!dbOperations.getEmployerProfile(userId)) {
+      await askToCreateProfile(ctx, userId, 'пригласить работника');
       return;
     }
     const vacancies = dbOperations.getEmployerVacancies(userId);
@@ -3057,10 +3084,9 @@ bot.on('message_callback', async (ctx) => {
       if (data) setVacancyFillState(userId, fillState, data);
       clearFillSession(userId);
     }
-    if (await ensureProfileFilling(ctx, userId)) return;
     const user = dbOperations.getUser(userId);
     if (user?.role === 'worker') {
-      await ctx.reply('Что вы хотите сделать?', workerMenuKeyboard());
+      await ctx.reply('Что вы хотите сделать?', workerMenuKeyboard(false, userId));
     } else if (user?.role === 'employer') {
       await ctx.reply('Что вы хотите сделать?', employerMenuKeyboard(false, userId));
     }
@@ -3628,5 +3654,27 @@ const startBot = () => {
   });
 };
 
+const EGRUL_RECHECK_MS = 30 * 60 * 1000;
+let egrulRecheckRunning = false;
+
+async function recheckEmployerRegistry() {
+  if (egrulRecheckRunning) return;
+  egrulRecheckRunning = true;
+  try {
+    for (const employer of dbOperations.getEmployersAwaitingVerification()) {
+      const result = await verifyAndStoreEmployer(employer.user_id);
+      if (result.status === 'unavailable') break;
+      const text = result.ok
+        ? `✅ Компания «${employer.company_name}» подтверждена по ${result.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ'}. Пометка в вакансиях обновлена.`
+        : `❌ Компания «${employer.company_name}» не подтверждена по ЕГРЮЛ/ЕГРИП.\n${result.error || ''}\nИсправьте данные в профиле компании и нажмите «Проверить по ЕГРЮЛ/ЕГРИП».`;
+      await notifyUser(bot.api, employer.user_id, text).catch((err) => console.error('[EGRUL notify]', err.message));
+    }
+  } finally {
+    egrulRecheckRunning = false;
+  }
+}
+
 startMiniAppServer();
 startBot();
+setTimeout(recheckEmployerRegistry, 60 * 1000);
+setInterval(recheckEmployerRegistry, EGRUL_RECHECK_MS);

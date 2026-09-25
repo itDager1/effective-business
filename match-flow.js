@@ -1,6 +1,6 @@
 import { dbOperations } from './db.js';
 import { gosuslugiStatusLine } from './esia.js';
-import { verificationLabel } from './egrul.js';
+import { publicVerificationLabel } from './egrul.js';
 
 export function matchStatusLabel(status) {
   if (status === 'accepted') return 'принят, контакты открыты';
@@ -61,7 +61,7 @@ export function incomingMatchText(match) {
       `Контакты откроются, если вы нажмёте «Принять».`;
   }
   return `📩 Компания «${employer?.company_name || 'Работодатель'}» откликнулась на вашу анкету\n` +
-    `${verificationLabel(employer)}\n\n` +
+    `${publicVerificationLabel(employer)}\n\n` +
     `Вакансия: ${job}\n` +
     `Описание: ${vacancy?.description || '—'}\n` +
     `Требования: ${vacancy?.requirements || '—'}\n` +
@@ -79,7 +79,7 @@ export function sharedContactsText(match) {
   return `✅ Отклик принят. Контакты открыты обеим сторонам.\n\n` +
     `Вакансия: ${vacancy?.job_title || '—'}\n\n` +
     `Соискатель: ${worker?.full_name || '—'}\n${gosuslugiStatusLine(worker)}\nТелефон: ${worker?.phone || '—'}\n\n` +
-    `Компания: ${employer?.company_name || '—'}\n${verificationLabel(employer)}\n` +
+    `Компания: ${employer?.company_name || '—'}\n${publicVerificationLabel(employer)}\n` +
     formatVacancyContactLines(contact);
 }
 
@@ -91,7 +91,7 @@ export function workerAcceptedNotice(match) {
   return `✅ Работодатель принял ваш отклик на «${job}».\n\n` +
     `Контакты для связи:\n` +
     `Компания: ${employer?.company_name || '—'}\n` +
-    `${verificationLabel(employer)}\n` +
+    `${publicVerificationLabel(employer)}\n` +
     formatVacancyContactLines(contact);
 }
 

@@ -9,8 +9,7 @@ export function normalizeInn(raw) {
   return String(raw || '').replace(/\D/g, '');
 }
 
-/** Формальная проверка контрольной суммы ИНН (тест/демо). Сейчас не блокирует заполнение. */
-export function testInnChecksum(raw) {
+export function innChecksumValid(raw) {
   const inn = normalizeInn(raw);
   if (inn.length === 10) {
     return innChecksum(inn, [2, 4, 10, 3, 5, 9, 4, 6, 8]) === Number(inn[9]);
@@ -152,18 +151,6 @@ function parseRow(row, inn) {
   };
 }
 
-function demoRecord({ inn, directorFio, legalAddress }) {
-  return {
-    inn,
-    ogrn: inn.length === 12 ? '3'.repeat(15) : '1'.repeat(13),
-    name: inn.length === 12 ? `ИП ${directorFio}` : 'Тестовая организация (демо-контур ФНС)',
-    address: legalAddress,
-    director: directorFio,
-    registry: inn.length === 12 ? 'egrip' : 'egrul',
-    demo: true
-  };
-}
-
 export async function lookupOrganization(inn) {
   const rows = await fnsSearch(inn);
   const match = rows.find((row) => String(row.i || '').replace(/\D/g, '') === inn) || rows[0];
@@ -177,8 +164,9 @@ export async function verifyEmployerRegistry({ inn, directorFio, legalAddress })
     console.error('[EGRUL]', err);
     return {
       ok: false,
-      status: 'failed',
-      error: 'Проверку ЕГРЮЛ/ЕГРИП сейчас выполнить не удалось. Профиль сохранён, повторите проверку позже.'
+      status: 'unavailable',
+      checked_at: new Date().toISOString(),
+      error: 'Сервис ФНС сейчас не ответил. Профиль сохранён, повторите проверку позже.'
     };
   }
 }
@@ -192,6 +180,9 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
       error: 'ИНН указан некорректно. Для юрлица — 10 цифр, для ИП — 12.'
     };
   }
+  if (!innChecksumValid(innNorm)) {
+    return { ok: false, status: 'failed', error: 'ИНН не проходит проверку контрольных цифр — проверьте номер.' };
+  }
   if (!normalizeFio(directorFio) || normalizeFio(directorFio).split(' ').length < 2) {
     return { ok: false, status: 'failed', error: 'Укажите ФИО руководителя полностью, как в ЕГРЮЛ или ЕГРИП.' };
   }
@@ -199,14 +190,7 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
     return { ok: false, status: 'failed', error: 'Укажите юридический адрес полностью: город, улица, дом.' };
   }
 
-  let record = null;
-  try {
-    record = await lookupOrganization(innNorm);
-  } catch (err) {
-    console.error('[EGRUL] lookup:', err.message);
-    record = demoRecord({ inn: innNorm, directorFio, legalAddress });
-  }
-
+  const record = await lookupOrganization(innNorm);
   if (!record) {
     return { ok: false, status: 'failed', error: 'Организация с таким ИНН не найдена в ЕГРЮЛ/ЕГРИП.' };
   }
@@ -226,7 +210,6 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
     fetched_director: record.director,
     ogrn: record.ogrn,
     inn: record.inn,
-    demo: Boolean(record.demo),
     checked_at: new Date().toISOString(),
     error: ok
       ? null
@@ -241,16 +224,23 @@ export function verificationLabel(profile) {
   const v = profile?.verification;
   if (v?.status === 'verified' && v.director_match && v.address_match) {
     const reg = v.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ';
-    const demo = v.demo ? ' (демо-контур, не живой ответ ФНС)' : '';
-    return `✅ Проверена по ${reg}${demo}`;
+    return `✅ Компания подтверждена по ${reg}`;
   }
-  if (v?.status === 'failed') return `❌ Не прошла проверку ФНС${v.error ? `: ${v.error}` : ''}`;
-  return '⏳ Компания ещё не проверена по ЕГРЮЛ/ЕГРИП';
+  if (v?.status === 'failed') return `❌ Компания не подтверждена: ${v.error || 'данные не совпали с реестром ФНС'}`;
+  if (v?.status === 'unavailable') return '⚠️ Компания не подтверждена: ФНС не ответила, проверка будет повторена';
+  return '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП';
+}
+
+export function publicVerificationLabel(profile) {
+  if (isEmployerVerified(profile)) {
+    return `✅ Компания подтверждена по ${profile.verification.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ'}`;
+  }
+  return '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП';
 }
 
 export function isEmployerVerified(profile) {
   const v = profile?.verification;
-  return Boolean(v && v.status === 'verified' && v.director_match && v.address_match);
+  return Boolean(v && v.status === 'verified' && v.director_match && v.address_match && !v.demo);
 }
 
 export function vacancyGateMessage(profile) {

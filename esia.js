@@ -2,66 +2,98 @@ import crypto from 'crypto';
 import { dbOperations } from './db.js';
 
 const pendingStates = new Map();
+const STATE_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_SCOPE = 'openid fullname birthdate gender snils contacts mobile email';
 
 function esiaBase() {
-  return process.env.ESIA_ENV === 'prod'
-    ? 'https://esia.gosuslugi.ru'
-    : 'https://esia-portal1.test.gosuslugi.ru';
+  return process.env.ESIA_ENV === 'test'
+    ? 'https://esia-portal1.test.gosuslugi.ru'
+    : 'https://esia.gosuslugi.ru';
+}
+
+function esiaScope() {
+  return process.env.ESIA_SCOPE || DEFAULT_SCOPE;
 }
 
 export function esiaConfigured() {
-  return Boolean(process.env.ESIA_CLIENT_ID && process.env.ESIA_REDIRECT_URI);
+  return Boolean(
+    process.env.ESIA_CLIENT_ID
+    && process.env.ESIA_REDIRECT_URI
+    && process.env.ESIA_CERT_HASH
+    && process.env.ESIA_SIGNER_URL
+  );
 }
 
-export function esiaDemoEnabled() {
-  return String(process.env.ESIA_DEMO || 'true').toLowerCase() !== 'false';
+function linkSecret() {
+  return String(process.env.BOT_TOKEN || '').trim() || 'esia-link';
 }
 
-function signState(payload) {
-  const secret = process.env.BOT_TOKEN || 'esia-state';
-  return crypto.createHmac('sha256', secret).update(payload).digest('hex').slice(0, 24);
+export function signEsiaLink(userId) {
+  return crypto.createHmac('sha256', linkSecret()).update(`esia:${Number(userId)}`).digest('hex').slice(0, 32);
 }
 
-export function createEsiaState(userId) {
-  const nonce = crypto.randomBytes(8).toString('hex');
-  const payload = `${userId}.${Date.now()}.${nonce}`;
-  const state = `${payload}.${signState(payload)}`;
-  const verifier = crypto.randomBytes(32).toString('base64url');
-  pendingStates.set(state, { userId: Number(userId), verifier, createdAt: Date.now() });
-  setTimeout(() => pendingStates.delete(state), 15 * 60 * 1000);
-  return { state, verifier };
+export function verifyEsiaLink(userId, sig) {
+  if (!userId || !sig) return false;
+  const expected = Buffer.from(signEsiaLink(userId));
+  const given = Buffer.from(String(sig));
+  return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }
 
-export function readEsiaState(state) {
-  if (!state) return null;
-  const parts = String(state).split('.');
-  if (parts.length < 4) return null;
-  const payload = parts.slice(0, 3).join('.');
-  const sig = parts[3];
-  if (sig !== signState(payload)) return null;
-  const pending = pendingStates.get(state);
-  const userId = Number(parts[0]);
-  if (!userId) return null;
-  return { userId, verifier: pending?.verifier || null };
+function esiaTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const abs = Math.abs(offset);
+  return `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} `
+    + `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`;
 }
 
-export function buildEsiaAuthUrl(userId) {
-  const { state, verifier } = createEsiaState(userId);
-  if (!esiaConfigured()) {
-    return { url: `/esia/demo?state=${encodeURIComponent(state)}`, state };
-  }
-  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
-  const params = new URLSearchParams({
-    client_id: process.env.ESIA_CLIENT_ID,
-    redirect_uri: process.env.ESIA_REDIRECT_URI,
-    response_type: 'code',
-    scope: process.env.ESIA_SCOPE || 'openid fullname birthdate gender contacts snils id_doc',
-    state,
-    access_type: 'online',
-    code_challenge: challenge,
-    code_challenge_method: 'S256'
+async function signForEsia(text) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (process.env.ESIA_SIGNER_TOKEN) headers.Authorization = `Bearer ${process.env.ESIA_SIGNER_TOKEN}`;
+  const res = await fetch(process.env.ESIA_SIGNER_URL, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ data: Buffer.from(text, 'utf8').toString('base64') })
   });
-  return { url: `${esiaBase()}/aas/oauth2/v2/ac?${params}`, state };
+  if (!res.ok) throw new Error(`Сервис подписи ЕСИА ответил ${res.status}`);
+  const json = await res.json();
+  const signature = String(json.signature || '');
+  if (!signature) throw new Error('Сервис подписи ЕСИА не вернул подпись');
+  return signature.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export async function buildEsiaAuthUrl(userId) {
+  if (!esiaConfigured()) return null;
+  const state = crypto.randomUUID();
+  pendingStates.set(state, { userId: Number(userId), createdAt: Date.now() });
+  setTimeout(() => pendingStates.delete(state), STATE_TTL_MS).unref?.();
+  const clientId = process.env.ESIA_CLIENT_ID;
+  const redirectUri = process.env.ESIA_REDIRECT_URI;
+  const scope = esiaScope();
+  const timestamp = esiaTimestamp();
+  const clientSecret = await signForEsia(`${clientId}${scope}${timestamp}${state}${redirectUri}`);
+  const params = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    client_certificate_hash: process.env.ESIA_CERT_HASH,
+    redirect_uri: redirectUri,
+    scope,
+    response_type: 'code',
+    state,
+    timestamp,
+    access_type: 'online'
+  });
+  return `${esiaBase()}/aas/oauth2/v2/ac?${params}`;
+}
+
+export function takeEsiaState(state) {
+  const pending = pendingStates.get(String(state || ''));
+  if (!pending) return null;
+  pendingStates.delete(String(state));
+  if (Date.now() - pending.createdAt > STATE_TTL_MS) return null;
+  return pending;
 }
 
 function ageFromBirthdate(value) {
@@ -96,16 +128,24 @@ async function esiaRequest(pathname, accessToken) {
   return res.json();
 }
 
-export async function exchangeEsiaCode(code, verifier) {
+async function exchangeEsiaCode(code, state) {
+  const clientId = process.env.ESIA_CLIENT_ID;
+  const redirectUri = process.env.ESIA_REDIRECT_URI;
+  const scope = esiaScope();
+  const timestamp = esiaTimestamp();
+  const clientSecret = await signForEsia(`${clientId}${scope}${timestamp}${state}${redirectUri}${code}`);
   const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: process.env.ESIA_CLIENT_ID,
-    client_secret: process.env.ESIA_CLIENT_SECRET || '',
-    redirect_uri: process.env.ESIA_REDIRECT_URI,
+    client_id: clientId,
     code,
+    grant_type: 'authorization_code',
+    client_secret: clientSecret,
+    client_certificate_hash: process.env.ESIA_CERT_HASH,
+    state,
+    redirect_uri: redirectUri,
+    scope,
+    timestamp,
     token_type: 'Bearer'
   });
-  if (verifier) body.set('code_verifier', verifier);
   const res = await fetch(`${esiaBase()}/aas/oauth2/v3/te`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -120,17 +160,17 @@ export async function exchangeEsiaCode(code, verifier) {
 
 function oidFromToken(tokenResponse) {
   if (tokenResponse?.oid) return String(tokenResponse.oid);
-  const idToken = tokenResponse?.id_token;
-  if (!idToken) return null;
+  const token = tokenResponse?.id_token || tokenResponse?.access_token;
+  if (!token) return null;
   try {
-    const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64url').toString('utf8'));
-    return String(payload['urn:esia:sbj_id'] || payload.sub || '');
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return String(payload['urn:esia:sbj_id'] || payload['urn:esia:sbj']?.['urn:esia:sbj:oid'] || payload.sub || '') || null;
   } catch {
     return null;
   }
 }
 
-export async function fetchLaborBook({ snils, accessToken, oid }) {
+async function fetchLaborBook({ snils, accessToken, oid }) {
   const endpoint = process.env.SFR_LABOR_BOOK_URL;
   if (!endpoint) return null;
   const res = await fetch(endpoint, {
@@ -146,81 +186,42 @@ export async function fetchLaborBook({ snils, accessToken, oid }) {
   return Array.isArray(data?.records) ? data.records : (Array.isArray(data) ? data : null);
 }
 
-function demoPerson(userId) {
-  return {
-    oid: `demo-${userId}`,
-    full_name: 'Иванов Иван Иванович',
-    age: 24,
-    birthdate: '2002-03-12',
-    phone: '++1-555-000-1234',
-    snils: '000-000-000 00',
-    email: 'demo@esia.test',
-    source: 'esia-demo',
-    labor_source: 'gosuslugi-etk-demo',
-    labor_book: [
-      {
-        organization: 'ООО «Цифровые сервисы»',
-        inn: '7700000000',
-        position: 'Младший аналитик',
-        started_at: '2022-07-01',
-        ended_at: '2024-02-29',
-        type: 'Основная'
-      },
-      {
-        organization: 'АО «РегионТех»',
-        inn: '3900000000',
-        position: 'Аналитик данных',
-        started_at: '2024-03-01',
-        ended_at: null,
-        type: 'Основная'
-      }
-    ]
+export async function importEsiaPerson(userId, { code, state }) {
+  if (!code) throw new Error('Госуслуги не передали код авторизации');
+  const tokens = await exchangeEsiaCode(code, state);
+  const oid = oidFromToken(tokens);
+  if (!oid) throw new Error('ЕСИА не вернула идентификатор пользователя');
+  const info = await esiaRequest(`/rs/prns/${oid}`, tokens.access_token);
+  let phone = '';
+  let email = '';
+  try {
+    const contacts = await esiaRequest(`/rs/prns/${oid}/ctts?embed=(elements)`, tokens.access_token);
+    const list = Array.isArray(contacts?.elements) ? contacts.elements : [];
+    phone = list.find((c) => c.type === 'MBT' && c.vrfStu === 'VERIFIED')?.value
+      || list.find((c) => c.type === 'MBT' || c.type === 'PHN')?.value || '';
+    email = list.find((c) => c.type === 'EML')?.value || '';
+  } catch (err) {
+    console.error('[ESIA] контакты:', err.message);
+  }
+  const person = {
+    oid,
+    full_name: fullNameFromEsia(info),
+    birthdate: info.birthDate || info.birth_date,
+    age: ageFromBirthdate(info.birthDate || info.birth_date),
+    snils: info.snils,
+    phone,
+    email,
+    trusted: Boolean(info.trusted),
+    source: 'esia'
   };
-}
-
-export async function importEsiaPerson(userId, { code, verifier, demo = false } = {}) {
-  let person;
-  if (demo || !code) {
-    if (!esiaDemoEnabled()) throw new Error('Тестовый контур ЕСИА выключен. Укажите ESIA_CLIENT_ID.');
-    person = demoPerson(userId);
-  } else {
-    const tokens = await exchangeEsiaCode(code, verifier);
-    const oid = oidFromToken(tokens);
-    if (!oid) throw new Error('ЕСИА не вернула идентификатор пользователя');
-    const info = await esiaRequest(`/rs/prns/${oid}`, tokens.access_token);
-    let phone = '';
-    let email = '';
-    try {
-      const contacts = await esiaRequest(`/rs/prns/${oid}/ctts?embed=true`, tokens.access_token);
-      const list = contacts?.elements || contacts || [];
-      const arr = Array.isArray(list) ? list : [];
-      phone = arr.find((c) => c.type === 'MBT' || c.type === 'PHN')?.value || '';
-      email = arr.find((c) => c.type === 'EML')?.value || '';
-    } catch {
+  try {
+    const labor = await fetchLaborBook({ snils: person.snils, accessToken: tokens.access_token, oid });
+    if (labor) {
+      person.labor_book = labor;
+      person.labor_source = 'gosuslugi-etk';
     }
-    person = {
-      oid,
-      full_name: fullNameFromEsia(info),
-      birthdate: info.birthDate || info.birth_date,
-      age: ageFromBirthdate(info.birthDate || info.birth_date),
-      snils: info.snils,
-      phone,
-      email,
-      source: 'esia'
-    };
-    try {
-      const labor = await fetchLaborBook({ snils: person.snils, accessToken: tokens.access_token, oid });
-      if (labor) {
-        person.labor_book = labor;
-        person.labor_source = 'gosuslugi-etk';
-      }
-    } catch (err) {
-      console.error('[ESIA] ЭТК:', err.message);
-    }
-    if (!person.labor_book && esiaDemoEnabled()) {
-      person.labor_book = demoPerson(userId).labor_book;
-      person.labor_source = 'gosuslugi-etk-demo';
-    }
+  } catch (err) {
+    console.error('[ESIA] ЭТК:', err.message);
   }
   if (person.labor_book?.length && !person.experience) {
     person.experience = experienceFromLabor(person.labor_book);
@@ -230,33 +231,37 @@ export async function importEsiaPerson(userId, { code, verifier, demo = false } 
 }
 
 export function isGosuslugiVerified(profile) {
-  return Boolean(profile?.gosuslugi?.verified || profile?.gosuslugi?.connected);
+  return Boolean(profile?.gosuslugi?.connected && profile.gosuslugi.source === 'esia');
+}
+
+export function profileSourceLabel(profile) {
+  return isGosuslugiVerified(profile)
+    ? '🏛 Анкета подтверждена через Госуслуги'
+    : '✍️ Анкета заполнена вручную · Госуслуги не подключены';
 }
 
 export function gosuslugiStatusLine(profile) {
-  return isGosuslugiVerified(profile)
-    ? '✅ Данные из Госуслуг подтверждены'
-    : '⚠️ Данные из Госуслуг не подтверждены';
+  const phone = profile?.phone_verified ? '\n📱 Телефон подтверждён в MAX' : '';
+  return `${profileSourceLabel(profile)}${phone}`;
 }
 
 export function formatLaborBook(profile) {
   const book = profile?.labor_book;
   if (!book?.records?.length) {
-    if (profile?.gosuslugi?.connected) {
-      return '📘 Электронная трудовая книжка подключена через Госуслуги, но записей пока нет.';
+    if (isGosuslugiVerified(profile)) {
+      return '📘 Госуслуги подключены, но записей электронной трудовой книжки пока нет.';
     }
-    return 'Электронная трудовая книжка ещё не подключена.';
+    return 'Электронная трудовая книжка не подключена: анкета заполнена вручную.';
   }
-  const demo = book.source?.includes('demo') ? '\n⚠️ Сведения тестового контура ЕСИА.' : '';
   const lines = book.records.map((row, i) => {
     const period = `${row.started_at || '?'}${row.ended_at ? ` — ${row.ended_at}` : ' — по н.в.'}`;
     return `${i + 1}. ${row.position || 'Должность'}\n   ${row.organization || 'Организация'}${row.inn ? ` (ИНН ${row.inn})` : ''}\n   ${period}${row.type ? ` · ${row.type}` : ''}`;
   });
-  return `📘 Электронная трудовая книжка (Госуслуги)\nОбновлено: ${book.updated_at || '—'}${demo}\n\n${lines.join('\n\n')}`;
+  return `📘 Электронная трудовая книжка (Госуслуги)\nОбновлено: ${book.updated_at || '—'}\n\n${lines.join('\n\n')}`;
 }
 
 export async function notifyWorkerEsia(userId, text) {
-  const token = process.env.BOT_TOKEN;
+  const token = String(process.env.BOT_TOKEN || '').trim();
   if (!token) return;
   try {
     await fetch(`https://platform-api2.max.ru/messages?user_id=${userId}`, {
