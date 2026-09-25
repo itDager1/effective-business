@@ -56,7 +56,11 @@ async function api(path, options = {}) {
     };
     const res = await fetch(path, { ...options, headers });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Ошибка запроса');
+    if (!res.ok) {
+      const err = new Error(data.error || 'Ошибка запроса');
+      err.status = res.status;
+      throw err;
+    }
     return data;
   } finally {
     pendingRequests = Math.max(0, pendingRequests - 1);
@@ -413,6 +417,7 @@ function staffScreen() {
   }
   const items = state.staff || [];
   return shell('Кадры', state.staffCompany || 'Штат', `
+    ${state.me.employer ? '' : '<div class="card"><div class="meta">Сначала заполните профиль компании на вкладке «Компания» — затем здесь появится ваш штат.</div></div>'}
     <div class="staff-hero">
       <div class="staff-kicker">Учёт кадров</div>
       <h2>${escapeHtml(state.staffCompany || 'Компания')}</h2>
@@ -610,10 +615,17 @@ function render() {
 
 async function loadMe() {
   state.me = await api('/api/me');
-  if (state.me.role === 'worker') {
-    await Promise.all([loadJobs(), loadFavorites(), loadMatches(), loadMyWork()]);
-  } else if (state.me.role === 'employer') {
-    await Promise.all([loadMyVacancies(), loadWorkers(), loadMatches(), loadStaff()]);
+  const loaders = state.me.role === 'worker'
+    ? [loadJobs, loadFavorites, loadMatches, loadMyWork]
+    : state.me.role === 'employer'
+      ? [loadMyVacancies, loadWorkers, loadMatches, loadStaff]
+      : [];
+  const results = await Promise.allSettled(loaders.map((load) => load()));
+  results
+    .filter((r) => r.status === 'rejected')
+    .forEach((r) => console.warn('[miniapp]', r.reason?.message || r.reason));
+  if (state.me.role === 'worker' && !state.me.worker && state.screen === 'home') {
+    state.screen = 'profile';
   }
   render();
 }
@@ -1016,9 +1028,11 @@ app.addEventListener('change', (e) => {
 loadMe().catch(showBootError);
 
 function showBootError(err) {
-  const localHint = location.hostname === 'localhost' || location.hostname === '127.0.0.1'
-    ? ' Откройте именно http://localhost:8080 и перезапустите бота, если сервер не запущен.'
-    : ' Откройте мини-приложение из чата с ботом в MAX.';
+  const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const localHint = err.status !== 401 ? ''
+    : isLocal
+      ? ' Откройте именно http://localhost:8080 и перезапустите бота, если сервер не запущен.'
+      : '';
   app.innerHTML = `<div class="empty">
     <p>${escapeHtml(err.message)}${escapeHtml(localHint)}</p>
     <button class="btn primary" id="boot-retry" type="button">Повторить</button>

@@ -785,7 +785,7 @@ async function handleApi(req, res, url) {
   if (method === 'GET' && pathname === '/api/staff') {
     const employer = dbOperations.getEmployerProfile(userId);
     if (!employer) {
-      sendJson(res, 403, { error: 'Кадры доступны работодателю' });
+      sendJson(res, 200, { company_name: '', items: [], needs_profile: true });
       return;
     }
     sendJson(res, 200, {
