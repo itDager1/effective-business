@@ -80,6 +80,10 @@ function addressTokens(value) {
     .filter((t) => t && t.length > 1 && !ADDR_STOP.has(t));
 }
 
+export function hasPostalIndex(address) {
+  return /\d{6}/.test(String(address || ''));
+}
+
 export function addressMatches(claimed, official) {
   const a = addressTokens(claimed);
   const b = new Set(addressTokens(official));
@@ -186,8 +190,8 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
   if (!normalizeFio(directorFio) || normalizeFio(directorFio).split(' ').length < 2) {
     return { ok: false, status: 'failed', error: 'Укажите ФИО руководителя полностью, как в ЕГРЮЛ или ЕГРИП.' };
   }
-  if (addressTokens(legalAddress).length < 2) {
-    return { ok: false, status: 'failed', error: 'Укажите юридический адрес полностью: город, улица, дом.' };
+  if (!hasPostalIndex(legalAddress) || addressTokens(legalAddress).length < 2) {
+    return { ok: false, status: 'failed', error: 'Укажите юридический адрес полностью: индекс, регион, город, улица, дом.' };
   }
 
   const record = await lookupOrganization(innNorm);

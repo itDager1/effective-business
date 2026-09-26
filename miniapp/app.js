@@ -414,7 +414,7 @@ function employerHome() {
       <label>Отрасль <input name="industry" value="${escapeHtml(e.industry)}" required></label>
       <label>О компании <textarea name="description" required minlength="1" placeholder="Можно коротко, хоть один символ">${escapeHtml(e.description)}</textarea></label>
       <label>ИНН <input name="inn" value="${escapeHtml(e.inn)}" required placeholder="10 цифр юрлица или 12 ИП"></label>
-      <label>Юридический адрес <textarea name="legal_address" required>${escapeHtml(e.legal_address)}</textarea></label>
+      <label>Юридический адрес <textarea name="legal_address" required placeholder="Индекс, регион, город, улица, дом">${escapeHtml(e.legal_address)}</textarea></label>
       <label>ФИО руководителя / ИП <input name="director_fio" value="${escapeHtml(e.director_fio)}" required></label>
       <label>Контактное лицо <input name="contact_person" value="${escapeHtml(e.contact_person)}" required></label>
       <label>Телефон <input name="phone" value="${escapeHtml(e.phone)}" required placeholder="+7 921 123-45-67 или +48 501 234 567"></label>

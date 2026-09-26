@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { dbOperations } from './db.js';
 import { cropToPortrait34 } from './photo.js';
 import { normalizeWebsite, validatePhone } from './phone.js';
-import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
+import { hasPostalIndex, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
 import {
   buildEsiaAuthUrl,
   takeEsiaState,
@@ -596,6 +596,10 @@ async function handleApi(req, res, url) {
     }
     if (!isValidInn(inn) || !director_fio || !legal_address) {
       sendJson(res, 400, { error: 'Укажите корректный ИНН, ФИО руководителя и юридический адрес' });
+      return;
+    }
+    if (!hasPostalIndex(legal_address)) {
+      sendJson(res, 400, { error: 'Добавьте почтовый индекс — 6 цифр: индекс, регион, город, улица, дом' });
       return;
     }
     dbOperations.addEmployerProfile(userId, company_name, industry, descriptionText, contact_person, phoneCheck.phone, {

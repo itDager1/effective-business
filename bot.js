@@ -6,7 +6,7 @@ import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
 import { normalizeWebsite, validatePhone } from './phone.js';
-import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
+import { hasPostalIndex, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
 import {
   formatMatchTitle,
@@ -758,7 +758,7 @@ const EMPLOYER_STEP_PROMPTS = {
   employer_asking_industry: '2️⃣ Отрасль/сектор?',
   employer_asking_desc: '3️⃣ Расскажите о компании: чем занимаетесь, сколько человек, какие задачи. Можно коротко, хоть один символ.',
   employer_asking_inn: '4️⃣ ИНН организации или ИП? Для юрлица — 10 цифр, для ИП — 12.',
-  employer_asking_address: '5️⃣ Юридический адрес, как в ЕГРЮЛ или ЕГРИП: регион, город, улица, дом.',
+  employer_asking_address: '5️⃣ Юридический адрес, как в ЕГРЮЛ или ЕГРИП: индекс, регион, город, улица, дом.',
   employer_asking_director: '6️⃣ ФИО руководителя (для юрлица) или ФИО ИП — как в реестре.',
   employer_asking_contact: '7️⃣ Контактное лицо для связи с соискателями? Если это руководитель, напишите «тот же».',
   employer_asking_phone: '8️⃣ Телефон компании? Российский или зарубежный, с кодом страны: +7…, +375…, +49…',
@@ -3521,7 +3521,11 @@ bot.on('message_created', async (ctx) => {
   }
 
   if (state === 'employer_asking_address') {
-    data.legalAddress = text;
+    if (!hasPostalIndex(text)) {
+      await ctx.reply('Добавьте почтовый индекс — 6 цифр. Например: 125009, г. Москва, ул. Тверская, д. 1.');
+      return;
+    }
+    data.legalAddress = text.trim();
     setFillState(userId, 'employer_asking_director', data);
     await promptProfileStep(ctx, 'employer_asking_director');
     return;
@@ -3583,7 +3587,7 @@ bot.on('message_created', async (ctx) => {
       2: ['edit_employer_field_2', 'Введите новую отрасль:'],
       3: ['edit_employer_field_3', 'Введите новое описание компании:'],
       4: ['edit_employer_field_4', 'Введите ИНН:'],
-      5: ['edit_employer_field_5', 'Введите юридический адрес:'],
+      5: ['edit_employer_field_5', 'Введите юридический адрес: индекс, регион, город, улица, дом.'],
       6: ['edit_employer_field_6', 'Введите ФИО руководителя:'],
       7: ['edit_employer_field_7', 'Введите контактное лицо:'],
       8: ['edit_employer_field_8', 'Введите реальный телефон с кодом страны, например +7 921 123-45-67 или +1 415 555 2671:'],
@@ -3625,7 +3629,13 @@ bot.on('message_created', async (ctx) => {
     } else if (state === 'edit_employer_field_1') editData.company_name = text;
     else if (state === 'edit_employer_field_2') editData.industry = text;
     else if (state === 'edit_employer_field_3') editData.description = String(text || '').trim();
-    else if (state === 'edit_employer_field_5') editData.legal_address = text;
+    else if (state === 'edit_employer_field_5') {
+      if (!hasPostalIndex(text)) {
+        await ctx.reply('Добавьте почтовый индекс — 6 цифр. Например: 125009, г. Москва, ул. Тверская, д. 1.');
+        return;
+      }
+      editData.legal_address = text.trim();
+    }
     else if (state === 'edit_employer_field_6') editData.director_fio = text;
     else if (state === 'edit_employer_field_7') editData.contact_person = text;
 
