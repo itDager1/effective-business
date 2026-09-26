@@ -5,7 +5,7 @@ import { dbOperations } from './db.js';
 import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified, laborBookLabel } from './esia.js';
-import { normalizeWebsite, validatePhone } from './phone.js';
+import { normalizeWebsite, phoneFromVcard, samePhone, validatePhone, verifyMaxContact } from './phone.js';
 import { hasPostalIndex, isEmployerVerified, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
 import {
@@ -393,6 +393,62 @@ function saveWorker(userId, data, photo) {
     photo,
     workerExtras(data)
   );
+  if (data.phone_verified && data.phone) {
+    dbOperations.setWorkerPhoneVerified(userId, data.phone);
+  }
+}
+
+function phoneConfirmKeyboard() {
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [[{ type: 'request_contact', text: 'Подтвердить номер в MAX' }]]
+      }
+    }]
+  };
+}
+
+function extractContactAttachment(ctx) {
+  const attachments = ctx.message?.body?.attachments || ctx.message?.attachments || [];
+  return attachments.find((item) => item.type === 'contact') || null;
+}
+
+async function acceptWorkerPhoneContact(ctx, userId, attachment) {
+  const payload = attachment.payload || attachment;
+  const token = String(process.env.BOT_TOKEN || '').trim();
+  const vcf = payload.vcf_info || payload.vcfInfo || '';
+  const hash = payload.hash || '';
+  if (!verifyMaxContact(vcf, hash, token)) {
+    await ctx.reply('MAX не подтвердил номер. Нажмите «Подтвердить номер в MAX»: контакт из записной книжки без подписи не подходит.');
+    return;
+  }
+  const shared = phoneFromVcard(vcf) || payload.vcf_phone || payload.phone || '';
+  const parsed = validatePhone(shared);
+  if (!parsed.ok) {
+    await ctx.reply('MAX передал контакт без номера телефона.');
+    return;
+  }
+  const profile = dbOperations.getWorkerProfile(userId);
+  const draft = userStates.get(`${userId}_data`);
+  const expected = profile?.phone || draft?.phone || '';
+  if (expected && !samePhone(expected, parsed.phone)) {
+    await ctx.reply(`В аккаунте MAX номер ${parsed.phone}, а в анкете указан ${expected}. Подтвердить можно только совпадающий номер: измените телефон в профиле.`);
+    return;
+  }
+  if (profile) {
+    dbOperations.setWorkerPhoneVerified(userId, parsed.phone);
+  }
+  if (draft) {
+    draft.phone = parsed.phone;
+    draft.phone_verified = true;
+    userStates.set(`${userId}_data`, draft);
+  }
+  await ctx.reply(`Номер ${parsed.phone} подтверждён: это телефон, привязанный к вашему аккаунту MAX.`);
+  if (userStates.get(userId) === 'worker_asking_phone' && draft) {
+    setFillState(userId, 'worker_asking_photo', draft);
+    await promptProfileStep(ctx, 'worker_asking_photo');
+  }
 }
 
 function saveEmployer(userId, data) {
@@ -498,6 +554,7 @@ function ownProfileButtons(profile) {
   return [
     ...esiaRow,
     [{ type: 'callback', text: profile.labor_book?.records?.length ? '📘 Трудовая книжка' : '📘 Подключить трудовую книжку', payload: 'my_labor' }],
+    ...(profile.phone_verified ? [] : [[{ type: 'request_contact', text: 'Подтвердить номер в MAX' }]]),
     [{ type: 'callback', text: 'Заменить фото', payload: 'replace_photo' }],
     statusRow,
     [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }],
@@ -787,7 +844,7 @@ const WORKER_STEP_PROMPTS = {
   worker_asking_education: '6️⃣ Образование? Учебное заведение, специальность, год.',
   worker_asking_skills: '7️⃣ Ключевые навыки? Перечислите через запятую.',
   worker_asking_about: '8️⃣ Расскажите о себе, если хотите. Можно пропустить.',
-  worker_asking_phone: '9️⃣ Ваш реальный номер телефона? Российский (+7 921 123-45-67) или зарубежный (+375 29 123-45-67, +48 501 234 567).',
+  worker_asking_phone: '9️⃣ Ваш реальный номер телефона? Российский (+7 921 123-45-67) или зарубежный (+375 29 123-45-67, +48 501 234 567). После номера нажмите «Подтвердить номер в MAX».',
   worker_asking_photo: FACE_PHOTO_PROMPT
 };
 
@@ -3327,6 +3384,11 @@ bot.on('message_created', async (ctx) => {
   const state = userStates.get(userId);
   
   console.log(`[MESSAGE] User: ${userId}, State: ${state}, Text: ${text}`);
+  const contact = extractContactAttachment(ctx);
+  if (contact && dbOperations.getUser(userId)?.role !== 'employer') {
+    await acceptWorkerPhoneContact(ctx, userId, contact);
+    return;
+  }
   if (state === 'staff_offering') {
     await finishStaffDevelopmentOffer(ctx, userId, text);
     return;
@@ -3479,6 +3541,7 @@ bot.on('message_created', async (ctx) => {
         return;
       }
       editData.phone = phone.phone;
+      editData.phone_verified = false;
     } else if (state === 'edit_field_1') editData.full_name = text;
     else if (state === 'edit_field_3') editData.city = text;
     else if (state === 'edit_field_4') editData.specialization = text;
@@ -3494,6 +3557,9 @@ bot.on('message_created', async (ctx) => {
     else if (state === 'edit_field_7') editData.skills = text;
     saveWorker(userId, editData, editData.photo);
     await ctx.reply('✅ Поле обновлено!');
+    if (state === 'edit_field_9') {
+      await ctx.reply(`Номер ${editData.phone} записан, но ещё не подтверждён. Нажмите кнопку: MAX передаст номер аккаунта, бот проверит подпись.`, phoneConfirmKeyboard());
+    }
     await showOwnProfile(ctx, userId);
     return;
   }
@@ -3586,7 +3652,9 @@ bot.on('message_created', async (ctx) => {
       return;
     }
     data.phone = phone.phone;
+    data.phone_verified = false;
     setFillState(userId, 'worker_asking_photo', data);
+    await ctx.reply(`Номер ${phone.phone} записан. Цифровой код MAX не присылает: нажмите кнопку, мессенджер передаст номер аккаунта с подписью.`, phoneConfirmKeyboard());
     await promptProfileStep(ctx, 'worker_asking_photo');
     return;
   }

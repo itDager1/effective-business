@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+
 const FAKE_TAILS = new Set([
   '0000000', '1111111', '2222222', '3333333', '4444444',
   '5555555', '6666666', '7777777', '8888888', '9999999',
@@ -171,6 +173,42 @@ export function normalizeWebsite(raw) {
     return { ok: false, error: 'Укажите адрес сайта, например https://company.ru' };
   }
   return { ok: true, website: parsed.href };
+}
+
+function phoneDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+export function samePhone(left, right) {
+  const a = phoneDigits(left);
+  const b = phoneDigits(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const norm = (digits) => (digits.length === 11 && digits.startsWith('8') ? `7${digits.slice(1)}` : digits);
+  return norm(a) === norm(b);
+}
+
+export function phoneFromVcard(vcf) {
+  const text = String(vcf || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  const match = text.match(/TEL[^:\r\n]*:([+\d\s()-]+)/i);
+  if (!match) return null;
+  const parsed = validatePhone(match[1]);
+  return parsed.ok ? parsed.phone : null;
+}
+
+export function verifyMaxContact(vcfInfo, hash, token) {
+  const given = String(hash || '').trim().toLowerCase();
+  const secret = String(token || '');
+  const raw = String(vcfInfo || '');
+  if (!given || !secret || !raw) return false;
+  const variants = [raw, raw.replace(/\\r\\n/g, '\r\n').replace(/\\n/g, '\n')];
+  for (const value of variants) {
+    const mac = crypto.createHmac('sha256', secret).update(value);
+    const hex = mac.digest('hex');
+    const b64 = crypto.createHmac('sha256', secret).update(value).digest('base64').replace(/=+$/, '').toLowerCase();
+    if (hex === given || b64 === given.replace(/=+$/, '')) return true;
+  }
+  return false;
 }
 
 export function isMeaningfulText(raw, minLen = 40) {
