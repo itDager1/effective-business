@@ -405,6 +405,19 @@ function phoneConfirmKeyboard() {
   };
 }
 
+function phoneMismatchKeyboard(creating) {
+  const rows = [[{ type: 'callback', text: 'Изменить номер', payload: 'change_worker_phone' }]];
+  if (creating) {
+    rows.push([{ type: 'callback', text: 'Отменить заполнение анкеты', payload: 'cancel_fill' }]);
+  }
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: { buttons: rows }
+    }]
+  };
+}
+
 function extractContactAttachment(ctx) {
   const attachments = ctx.message?.body?.attachments || ctx.message?.attachments || [];
   return attachments.find((item) => item.type === 'contact') || null;
@@ -425,14 +438,33 @@ async function acceptWorkerPhoneContact(ctx, userId, attachment) {
     await ctx.reply('MAX передал контакт без номера телефона.');
     return;
   }
-  const profile = dbOperations.getWorkerProfile(userId);
+  const state = userStates.get(userId);
   const draft = userStates.get(`${userId}_data`);
-  const expected = profile?.phone || draft?.phone || '';
-  if (expected && !samePhone(expected, parsed.phone)) {
-    await ctx.reply(`В аккаунте MAX номер ${parsed.phone}, а в анкете указан ${expected}. Подтвердить можно только совпадающий номер: измените телефон в профиле.`);
+  const profile = dbOperations.getWorkerProfile(userId);
+  const takingNumber = state === 'worker_asking_phone' || state === 'edit_field_9';
+  if (!takingNumber) {
+    const expected = profile?.phone || draft?.phone || '';
+    if (expected && !samePhone(expected, parsed.phone)) {
+      const creating = !profile && Boolean(draft);
+      await ctx.reply(
+        `В аккаунте MAX номер ${parsed.phone}, а в анкете указан ${expected}. Подтвердить можно только совпадающий номер.`,
+        phoneMismatchKeyboard(creating)
+      );
+      return;
+    }
+  }
+  if (state === 'edit_field_9') {
+    const editData = userStates.get(`${userId}_edit_data`) || { ...(profile || {}) };
+    editData.phone = parsed.phone;
+    editData.phone_verified = true;
+    userStates.set(`${userId}_edit_data`, editData);
+    saveWorker(userId, editData, editData.photo);
+    dbOperations.setWorkerPhoneVerified(userId, parsed.phone);
+    await ctx.reply(`Номер ${parsed.phone} подтверждён: это телефон, привязанный к вашему аккаунту MAX.`);
+    await showOwnProfile(ctx, userId);
     return;
   }
-  if (profile) {
+  if (profile && state !== 'worker_asking_phone') {
     dbOperations.setWorkerPhoneVerified(userId, parsed.phone);
   }
   if (draft) {
@@ -441,7 +473,7 @@ async function acceptWorkerPhoneContact(ctx, userId, attachment) {
     userStates.set(`${userId}_data`, draft);
   }
   await ctx.reply(`Номер ${parsed.phone} подтверждён: это телефон, привязанный к вашему аккаунту MAX.`);
-  if (userStates.get(userId) === 'worker_asking_phone' && draft) {
+  if (state === 'worker_asking_phone' && draft) {
     setFillState(userId, 'worker_asking_photo', draft);
     await promptProfileStep(ctx, 'worker_asking_photo');
   }
@@ -809,6 +841,9 @@ function fillActionKeyboard(state) {
   if (state === 'worker_asking_photo') {
     rows.push([{ type: 'callback', text: 'Пропустить', payload: 'skip_photo' }]);
   }
+  if (state === 'worker_asking_phone') {
+    rows.push([{ type: 'request_contact', text: 'Отправить номер из MAX' }]);
+  }
   rows.push([
     { type: 'callback', text: 'Отменить заполнение', payload: 'cancel_fill' },
     { type: 'callback', text: 'Сменить роль', payload: 'switch_profile' }
@@ -840,7 +875,7 @@ const WORKER_STEP_PROMPTS = {
   worker_asking_education: '6️⃣ Образование? Учебное заведение, специальность, год.',
   worker_asking_skills: '7️⃣ Ключевые навыки? Перечислите через запятую.',
   worker_asking_about: '8️⃣ Расскажите о себе, если хотите. Можно пропустить.',
-  worker_asking_phone: '9️⃣ Ваш реальный номер телефона? Российский (+7 921 123-45-67) или зарубежный (+375 29 123-45-67, +48 501 234 567). После номера нажмите «Подтвердить номер в MAX».',
+  worker_asking_phone: '9️⃣ Номер телефона. Нажмите «Отправить номер из MAX» — мессенджер передаст номер аккаунта, и он сразу подтвердится. Или напишите номер вручную: +7 921 123-45-67, +375 29 123-45-67, +48 501 234 567.',
   worker_asking_photo: FACE_PHOTO_PROMPT
 };
 
@@ -2113,6 +2148,31 @@ bot.on('message_callback', async (ctx) => {
 
   if (payload === 'cancel_fill') {
     await cancelProfileFill(ctx, userId);
+    return;
+  }
+
+  if (payload === 'change_worker_phone') {
+    const profile = dbOperations.getWorkerProfile(userId);
+    const draft = userStates.get(`${userId}_data`);
+    if (!profile && draft) {
+      delete draft.phone;
+      draft.phone_verified = false;
+      setFillState(userId, 'worker_asking_phone', draft);
+      await promptProfileStep(ctx, 'worker_asking_phone');
+      return;
+    }
+    if (profile) {
+      userStates.set(`${userId}_edit_data`, { ...profile });
+      userStates.set(userId, 'edit_field_9');
+      await ctx.reply('Введите другой номер или отправьте номер из MAX.', {
+        attachments: [{
+          type: 'inline_keyboard',
+          payload: { buttons: [[{ type: 'request_contact', text: 'Отправить номер из MAX' }]] }
+        }]
+      });
+      return;
+    }
+    await ctx.reply('Анкета не найдена.');
     return;
   }
 
@@ -3511,12 +3571,18 @@ bot.on('message_created', async (ctx) => {
       6: ['edit_field_6', 'Введите образование:'],
       7: ['edit_field_7', 'Введите навыки:'],
       8: ['edit_field_8', 'Расскажите о себе или нажмите «Пропустить»:'],
-      9: ['edit_field_9', 'Введите реальный телефон: +7 921 123-45-67 или зарубежный, например +375 29 123-45-67:'],
+      9: ['edit_field_9', 'Введите другой номер или нажмите «Отправить номер из MAX»: +7 921 123-45-67 или зарубежный, например +375 29 123-45-67.'],
       10: ['edit_field_10', FACE_PHOTO_PROMPT]
     };
     const [nextState, prompt] = prompts[choice];
     userStates.set(userId, nextState);
-    await ctx.reply(prompt, choice === 10 ? skipPhotoKeyboard() : choice === 8 ? skipAboutKeyboard() : undefined);
+    const phoneKeyboard = {
+      attachments: [{
+        type: 'inline_keyboard',
+        payload: { buttons: [[{ type: 'request_contact', text: 'Отправить номер из MAX' }]] }
+      }]
+    };
+    await ctx.reply(prompt, choice === 10 ? skipPhotoKeyboard() : choice === 8 ? skipAboutKeyboard() : choice === 9 ? phoneKeyboard : undefined);
     return;
   }
 
