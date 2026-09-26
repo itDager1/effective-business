@@ -245,19 +245,29 @@ export function gosuslugiStatusLine(profile) {
   return `${profileSourceLabel(profile)}${phone}`;
 }
 
+export function laborBookLabel(profile) {
+  const records = profile?.labor_book?.records || [];
+  if (!records.length) return 'не подключена';
+  const official = records.every((row) => row.origin !== 'worker')
+    && (profile.labor_book.source === 'gosuslugi' || profile.labor_book.source === 'gosuslugi-etk');
+  return official ? `${records.length} запис. · Госуслуги` : `${records.length} запис. · внесена работником`;
+}
+
 export function formatLaborBook(profile) {
   const book = profile?.labor_book;
   if (!book?.records?.length) {
-    if (isGosuslugiVerified(profile)) {
-      return '📘 Госуслуги подключены, но записей электронной трудовой книжки пока нет.';
-    }
-    return 'Электронная трудовая книжка не подключена: анкета заполнена вручную.';
+    return '📘 Электронная трудовая книжка не подключена.\nМожно добавить записи в своём профиле. Выписка из Госуслуг появится, когда будет подключена ЕСИА.';
   }
+  const official = book.source === 'gosuslugi' || book.source === 'gosuslugi-etk';
+  const manual = book.records.some((row) => row.origin === 'worker');
+  const title = official && !manual
+    ? '📘 Электронная трудовая книжка (Госуслуги)'
+    : '📘 Трудовая книжка (записи внёс работник, это не выписка Госуслуг)';
   const lines = book.records.map((row, i) => {
     const period = `${row.started_at || '?'}${row.ended_at ? ` — ${row.ended_at}` : ' — по н.в.'}`;
     return `${i + 1}. ${row.position || 'Должность'}\n   ${row.organization || 'Организация'}${row.inn ? ` (ИНН ${row.inn})` : ''}\n   ${period}${row.type ? ` · ${row.type}` : ''}`;
   });
-  return `📘 Электронная трудовая книжка (Госуслуги)\nОбновлено: ${book.updated_at || '—'}\n\n${lines.join('\n\n')}`;
+  return `${title}\nОбновлено: ${book.updated_at || '—'}\n\n${lines.join('\n\n')}`;
 }
 
 export async function notifyWorkerEsia(userId, text) {

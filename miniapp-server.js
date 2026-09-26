@@ -13,6 +13,7 @@ import {
   importEsiaPerson,
   notifyWorkerEsia,
   formatLaborBook,
+  laborBookLabel,
   esiaConfigured,
   signEsiaLink,
   verifyEsiaLink,
@@ -184,7 +185,8 @@ function publicWorker(worker, viewerId = null) {
     profile_source: isGosuslugiVerified(worker) ? 'gosuslugi' : 'manual',
     profile_source_label: profileSourceLabel(worker),
     phone_verified: Boolean(worker.phone_verified),
-    labor_book: isGosuslugiVerified(worker) ? labor_book || null : null
+    labor_book: labor_book?.records?.length ? labor_book : null,
+    labor_label: laborBookLabel(worker)
   };
 }
 
@@ -495,13 +497,47 @@ async function handleApi(req, res, url) {
     const worker = dbOperations.getWorkerProfile(workerId);
     sendJson(res, 200, {
       text: formatLaborBook(worker),
-      labor_book: isGosuslugiVerified(worker) ? worker.labor_book || null : null,
+      labor_book: worker.labor_book?.records?.length ? worker.labor_book : null,
+      labor_label: laborBookLabel(worker),
       gosuslugi: isGosuslugiVerified(worker)
     });
     return;
   }
 
   const body = method === 'GET' ? {} : await readBody(req);
+
+  if (method === 'POST' && pathname === '/api/worker/labor-book') {
+    const profile = dbOperations.getWorkerProfile(userId);
+    if (!profile) {
+      sendJson(res, 400, { error: 'Сначала создайте анкету работника' });
+      return;
+    }
+    if (body.clear) {
+      dbOperations.clearLaborBook(userId);
+      sendJson(res, 200, snapshot(userId));
+      return;
+    }
+    const organization = String(body.organization || '').trim();
+    const position = String(body.position || '').trim();
+    const started = String(body.started_at || '').trim();
+    const endedRaw = String(body.ended_at || '').trim();
+    if (!organization || !position || !/^\d{2}\.\d{2}\.\d{4}$/.test(started)) {
+      sendJson(res, 400, { error: 'Нужны организация, должность и дата начала дд.мм.гггг' });
+      return;
+    }
+    if (endedRaw && !/^\d{2}\.\d{2}\.\d{4}$/.test(endedRaw)) {
+      sendJson(res, 400, { error: 'Дата окончания: дд.мм.гггг или пусто, если работаете сейчас' });
+      return;
+    }
+    dbOperations.addLaborRecord(userId, {
+      organization,
+      position,
+      started_at: started,
+      ended_at: endedRaw
+    });
+    sendJson(res, 200, snapshot(userId));
+    return;
+  }
 
   if (method === 'POST' && pathname === '/api/role') {
     if (!['worker', 'employer'].includes(body.role)) {

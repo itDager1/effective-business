@@ -4,7 +4,7 @@ import { Bot } from '@maxhub/max-bot-api';
 import { dbOperations } from './db.js';
 import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
-import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
+import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified, laborBookLabel } from './esia.js';
 import { normalizeWebsite, validatePhone } from './phone.js';
 import { hasPostalIndex, isEmployerVerified, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
@@ -473,6 +473,7 @@ function formatOwnProfileText(profile) {
     `9. Телефон: ${profile.phone}\n` +
     `10. Фото: ${photoStatusText(profile.photo)}\n` +
     `${gosuslugiStatusLine(profile)}\n` +
+    `Электронная трудовая: ${laborBookLabel(profile)}\n` +
     `Статус: ${statusText}\n\n` +
     `Напишите номер пункта, чтобы изменить (1-10), или нажмите «Заменить фото».`;
 }
@@ -496,11 +497,44 @@ function ownProfileButtons(profile) {
     : [];
   return [
     ...esiaRow,
+    [{ type: 'callback', text: profile.labor_book?.records?.length ? '📘 Трудовая книжка' : '📘 Подключить трудовую книжку', payload: 'my_labor' }],
     [{ type: 'callback', text: 'Заменить фото', payload: 'replace_photo' }],
     statusRow,
     [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }],
     [{ type: 'callback', text: 'Назад', payload: 'back_to_menu' }]
   ];
+}
+
+function parseLaborDate(value, allowNow) {
+  const text = String(value || '').trim();
+  if (allowNow && (!text || text === '-' || /^н\.?\s*в\.?$/i.test(text) || text.toLowerCase() === 'сейчас')) {
+    return '';
+  }
+  if (!/^\d{2}\.\d{2}\.\d{4}$/.test(text)) return null;
+  const [day, month, year] = text.split('.').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return text;
+}
+
+function laborBookKeyboard(profile) {
+  const buttons = [
+    [{ type: 'callback', text: 'Добавить запись', payload: 'labor_add' }]
+  ];
+  if (profile?.labor_book?.records?.length) {
+    buttons.push([{ type: 'callback', text: 'Очистить книжку', payload: 'labor_clear' }]);
+  }
+  buttons.push([{ type: 'callback', text: 'К профилю', payload: 'view_profile' }]);
+  return { attachments: [{ type: 'inline_keyboard', payload: { buttons } }] };
+}
+
+async function showMyLabor(ctx, userId) {
+  const profile = dbOperations.getWorkerProfile(userId);
+  if (!profile) {
+    await ctx.reply('Сначала создайте анкету работника.');
+    return;
+  }
+  await ctx.reply(formatLaborBook(profile), laborBookKeyboard(profile));
 }
 
 function formatCompanyEmploymentLine(jobs) {
@@ -535,7 +569,7 @@ function formatWorkerCardText(worker, index, total, viewerId = null) {
     `О себе: ${worker.about || 'не указано'}\n` +
     `Телефон: ${showPhone ? worker.phone : 'скрыт до принятия отклика'}\n` +
     `Фото: ${photoStatusText(worker.photo)}\n` +
-    `ЭТК: ${worker.labor_book?.records?.length ? `${worker.labor_book.records.length} запис.` : 'нет'}\n\n` +
+    `ЭТК: ${laborBookLabel(worker)}\n\n` +
     `(${index + 1} из ${total})`;
 }
 
@@ -3235,6 +3269,40 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
   
+  if (payload === 'my_labor') {
+    await showMyLabor(ctx, userId);
+    return;
+  }
+
+  if (payload === 'labor_add') {
+    const profile = dbOperations.getWorkerProfile(userId);
+    if (!profile) {
+      await ctx.reply('Сначала создайте анкету работника.');
+      return;
+    }
+    userStates.set(userId, 'labor_org');
+    userStates.set(`${userId}_labor`, {});
+    await ctx.reply('Организация, как в трудовой книжке.');
+    return;
+  }
+
+  if (payload === 'labor_clear') {
+    dbOperations.clearLaborBook(userId);
+    await ctx.reply('Записи трудовой книжки удалены.', laborBookKeyboard(dbOperations.getWorkerProfile(userId)));
+    return;
+  }
+
+  if (payload === 'labor_now') {
+    if (userStates.get(userId) !== 'labor_end') return;
+    const draft = userStates.get(`${userId}_labor`) || {};
+    draft.ended_at = '';
+    userStates.delete(userId);
+    userStates.delete(`${userId}_labor`);
+    dbOperations.addLaborRecord(userId, draft);
+    await ctx.reply('Запись добавлена. Работодатель увидит, что её внёс работник.', laborBookKeyboard(dbOperations.getWorkerProfile(userId)));
+    return;
+  }
+
   if (payload === 'back_to_menu') {
     const fillState = userStates.get(userId);
     if (String(fillState || '').startsWith('vacancy_asking')) {
@@ -3264,6 +3332,57 @@ bot.on('message_created', async (ctx) => {
     return;
   }
   if (!state) return;
+
+  if (state === 'labor_org' || state === 'labor_position' || state === 'labor_start' || state === 'labor_end') {
+    const draft = userStates.get(`${userId}_labor`) || {};
+    if (state === 'labor_org') {
+      if (!text.trim()) {
+        await ctx.reply('Напишите название организации.');
+        return;
+      }
+      draft.organization = text.trim();
+      userStates.set(`${userId}_labor`, draft);
+      userStates.set(userId, 'labor_position');
+      await ctx.reply('Должность.');
+      return;
+    }
+    if (state === 'labor_position') {
+      if (!text.trim()) {
+        await ctx.reply('Напишите должность.');
+        return;
+      }
+      draft.position = text.trim();
+      userStates.set(`${userId}_labor`, draft);
+      userStates.set(userId, 'labor_start');
+      await ctx.reply('Дата начала: дд.мм.гггг');
+      return;
+    }
+    if (state === 'labor_start') {
+      const started = parseLaborDate(text, false);
+      if (!started) {
+        await ctx.reply('Дата начала в формате дд.мм.гггг.');
+        return;
+      }
+      draft.started_at = started;
+      userStates.set(`${userId}_labor`, draft);
+      userStates.set(userId, 'labor_end');
+      await ctx.reply('Дата окончания: дд.мм.гггг. Если работаете сейчас — нажмите кнопку или напишите «н.в.».', {
+        attachments: [{ type: 'inline_keyboard', payload: { buttons: [[{ type: 'callback', text: 'По настоящее время', payload: 'labor_now' }]] } }]
+      });
+      return;
+    }
+    const ended = parseLaborDate(text, true);
+    if (ended === null) {
+      await ctx.reply('Дата окончания в формате дд.мм.гггг или «н.в.».');
+      return;
+    }
+    draft.ended_at = ended;
+    userStates.delete(userId);
+    userStates.delete(`${userId}_labor`);
+    dbOperations.addLaborRecord(userId, draft);
+    await ctx.reply('Запись добавлена. Работодатель увидит, что её внёс работник.', laborBookKeyboard(dbOperations.getWorkerProfile(userId)));
+    return;
+  }
 
   if (state === 'job_city' || state === 'job_near' || state === 'worker_city' || state === 'worker_near') {
     await acceptCityText(ctx, userId, state, text);

@@ -375,7 +375,19 @@ function profileScreen() {
     ${exists ? '' : '<div class="card cta-card"><h2>Создайте анкету</h2><div class="meta">После сохранения можно откликаться на вакансии и получать приглашения от работодателей.</div></div>'}
     ${photoTag(w.photo || state.pendingPhoto)}
     ${verificationCard(w, exists)}
-    ${w.labor_book?.records?.length ? `<div class="card"><h2>Электронная трудовая книжка</h2><div class="meta">${w.labor_book.records.map((r) => `${escapeHtml(r.position)} · ${escapeHtml(r.organization)} (${escapeHtml(r.started_at)} — ${escapeHtml(r.ended_at || 'н.в.')})`).join('<br>')}</div></div>` : ''}
+    <div class="card">
+      <h2>Электронная трудовая книжка</h2>
+      <div class="meta">${escapeHtml(w.labor_label || (w.labor_book?.records?.length ? `${w.labor_book.records.length} запис.` : 'не подключена'))}</div>
+      ${w.labor_book?.records?.length ? `<div class="meta">${w.labor_book.records.map((r) => `${escapeHtml(r.position)} · ${escapeHtml(r.organization)} (${escapeHtml(r.started_at)} — ${escapeHtml(r.ended_at || 'н.в.')})`).join('<br>')}</div>` : '<div class="meta">Записи увидит работодатель. Это не выписка Госуслуг: её можно будет загрузить, когда подключена ЕСИА.</div>'}
+      ${exists ? `<form class="form" id="labor-form">
+        <label>Организация <input name="organization" required></label>
+        <label>Должность <input name="position" required></label>
+        <label>Начало <input name="started_at" required placeholder="дд.мм.гггг"></label>
+        <label>Окончание <input name="ended_at" placeholder="дд.мм.гггг или пусто"></label>
+        <button class="btn primary" type="submit">Добавить запись</button>
+      </form>
+      ${w.labor_book?.records?.length ? '<div class="row"><button class="btn ghost" type="button" data-act="labor-clear">Очистить книжку</button></div>' : ''}` : '<div class="meta">Сначала сохраните анкету, затем можно добавить записи.</div>'}
+    </div>
     <div class="photo-actions">
       <label class="btn primary">
         Выбрать фото из галереи
@@ -902,6 +914,12 @@ app.addEventListener('click', async (e) => {
       render();
       return;
     }
+    if (act === 'labor-clear') {
+      state.me = await api('/api/worker/labor-book', { method: 'POST', body: JSON.stringify({ clear: true }) });
+      toast('Записи трудовой книжки удалены');
+      render();
+      return;
+    }
     if (act === 'labor') {
       const worker = state.workers[state.workerIndex];
       const data = await api(`/api/workers/${worker.user_id}/labor-book`);
@@ -1058,7 +1076,11 @@ app.addEventListener('click', async (e) => {
 app.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    if (e.target.id === 'worker-form') {
+    if (e.target.id === 'labor-form') {
+      state.me = await api('/api/worker/labor-book', { method: 'POST', body: JSON.stringify(formData(e.target)) });
+      toast('Запись добавлена в трудовую книжку');
+      render();
+    } else if (e.target.id === 'worker-form') {
       const created = !state.me.worker;
       state.me = await api('/api/worker-profile', { method: 'POST', body: JSON.stringify(formData(e.target)) });
       state.pendingPhoto = null;

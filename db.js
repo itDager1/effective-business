@@ -257,6 +257,29 @@ export const dbOperations = {
     return profile?.labor_book || null;
   },
 
+  addLaborRecord: (userId, record) => {
+    const profile = database.workers.find((w) => w.user_id === userId);
+    if (!profile) return null;
+    if (!profile.labor_book || !Array.isArray(profile.labor_book.records)) {
+      profile.labor_book = { source: 'worker', records: [] };
+    }
+    profile.labor_book.records.push({ ...record, origin: 'worker' });
+    if (profile.labor_book.source !== 'gosuslugi' && profile.labor_book.source !== 'gosuslugi-etk') {
+      profile.labor_book.source = 'worker';
+    }
+    profile.labor_book.updated_at = new Date().toISOString();
+    saveDb();
+    return profile.labor_book;
+  },
+
+  clearLaborBook: (userId) => {
+    const profile = database.workers.find((w) => w.user_id === userId);
+    if (!profile) return null;
+    profile.labor_book = { source: 'worker', updated_at: new Date().toISOString(), records: [] };
+    saveDb();
+    return profile.labor_book;
+  },
+
   addEmployerProfile: (userId, companyName, industry, description, contactPerson, phone, extras = {}) => {
     const existing = database.employers.find(e => e.user_id === userId);
     const inn = extras.inn !== undefined ? String(extras.inn).replace(/\D/g, '') : (existing?.inn || '');
