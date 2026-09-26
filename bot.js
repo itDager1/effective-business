@@ -5,7 +5,7 @@ import { dbOperations } from './db.js';
 import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
-import { isMeaningfulText, normalizeWebsite, validatePhone } from './phone.js';
+import { normalizeWebsite, validatePhone } from './phone.js';
 import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
 import {
@@ -756,7 +756,7 @@ const WORKER_STEP_PROMPTS = {
 const EMPLOYER_STEP_PROMPTS = {
   employer_asking_company: '1️⃣ Как называется ваша компания?',
   employer_asking_industry: '2️⃣ Отрасль/сектор?',
-  employer_asking_desc: '3️⃣ Расскажите о компании: чем занимаетесь, сколько человек, какие задачи. Не меньше 40 символов.',
+  employer_asking_desc: '3️⃣ Расскажите о компании: чем занимаетесь, сколько человек, какие задачи. Можно коротко, хоть один символ.',
   employer_asking_inn: '4️⃣ ИНН организации или ИП? Для юрлица — 10 цифр, для ИП — 12.',
   employer_asking_address: '5️⃣ Юридический адрес, как в ЕГРЮЛ или ЕГРИП: регион, город, улица, дом.',
   employer_asking_director: '6️⃣ ФИО руководителя (для юрлица) или ФИО ИП — как в реестре.',
@@ -3497,11 +3497,12 @@ bot.on('message_created', async (ctx) => {
   }
   
   if (state === 'employer_asking_desc') {
-    if (!isMeaningfulText(text, 40)) {
-      await ctx.reply('Опишите компанию подробнее, не короче 40 символов.');
+    const description = String(text || '').trim();
+    if (!description) {
+      await ctx.reply('Напишите о компании. Достаточно одного символа.');
       return;
     }
-    data.description = text;
+    data.description = description;
     setFillState(userId, 'employer_asking_inn', data);
     await promptProfileStep(ctx, 'employer_asking_inn');
     return;
@@ -3596,8 +3597,8 @@ bot.on('message_created', async (ctx) => {
   
   if (/^edit_employer_field_[1-9]$/.test(state)) {
     const editData = userStates.get(`${userId}_edit_employer_data`);
-    if (state === 'edit_employer_field_3' && !isMeaningfulText(text, 40)) {
-      await ctx.reply('Опишите компанию подробнее, не короче 40 символов.');
+    if (state === 'edit_employer_field_3' && !String(text || '').trim()) {
+      await ctx.reply('Напишите о компании. Достаточно одного символа.');
       return;
     }
     if (state === 'edit_employer_field_4') {
@@ -3623,7 +3624,7 @@ bot.on('message_created', async (ctx) => {
       editData.website = site.website;
     } else if (state === 'edit_employer_field_1') editData.company_name = text;
     else if (state === 'edit_employer_field_2') editData.industry = text;
-    else if (state === 'edit_employer_field_3') editData.description = text;
+    else if (state === 'edit_employer_field_3') editData.description = String(text || '').trim();
     else if (state === 'edit_employer_field_5') editData.legal_address = text;
     else if (state === 'edit_employer_field_6') editData.director_fio = text;
     else if (state === 'edit_employer_field_7') editData.contact_person = text;

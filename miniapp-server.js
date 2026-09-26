@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dbOperations } from './db.js';
 import { cropToPortrait34 } from './photo.js';
-import { isMeaningfulText, normalizeWebsite, validatePhone } from './phone.js';
+import { normalizeWebsite, validatePhone } from './phone.js';
 import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
 import {
   buildEsiaAuthUrl,
@@ -589,15 +589,16 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: phoneCheck.ok ? 'Заполните все поля компании' : phoneCheck.error });
       return;
     }
-    if (!isMeaningfulText(description, 40)) {
-      sendJson(res, 400, { error: 'Опишите компанию подробнее — не меньше 40 символов' });
+    const descriptionText = String(description || '').trim();
+    if (!descriptionText) {
+      sendJson(res, 400, { error: 'Напишите о компании. Достаточно одного символа' });
       return;
     }
     if (!isValidInn(inn) || !director_fio || !legal_address) {
       sendJson(res, 400, { error: 'Укажите корректный ИНН, ФИО руководителя и юридический адрес' });
       return;
     }
-    dbOperations.addEmployerProfile(userId, company_name, industry, description, contact_person, phoneCheck.phone, {
+    dbOperations.addEmployerProfile(userId, company_name, industry, descriptionText, contact_person, phoneCheck.phone, {
       inn, legal_address, director_fio, website: site.website
     });
     dbOperations.updateUserRole(userId, 'employer');

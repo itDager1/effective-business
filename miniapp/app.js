@@ -412,7 +412,7 @@ function employerHome() {
       ${exists ? `<div class="${verified ? 'rec' : 'warn'}">${escapeHtml(e.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div>` : ''}
       <label>Название <input name="company_name" value="${escapeHtml(e.company_name)}" required></label>
       <label>Отрасль <input name="industry" value="${escapeHtml(e.industry)}" required></label>
-      <label>О компании <textarea name="description" required minlength="40">${escapeHtml(e.description)}</textarea></label>
+      <label>О компании <textarea name="description" required minlength="1" placeholder="Можно коротко, хоть один символ">${escapeHtml(e.description)}</textarea></label>
       <label>ИНН <input name="inn" value="${escapeHtml(e.inn)}" required placeholder="10 цифр юрлица или 12 ИП"></label>
       <label>Юридический адрес <textarea name="legal_address" required>${escapeHtml(e.legal_address)}</textarea></label>
       <label>ФИО руководителя / ИП <input name="director_fio" value="${escapeHtml(e.director_fio)}" required></label>
