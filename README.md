@@ -7,7 +7,7 @@
 Бот: https://max.ru/t339_hakaton_max_bot (@t339_hakaton_max_bot)
 Мини-приложение уже привязано к боту: https://max339.ru
 Репозиторий: https://github.com/itDager1/effective-business
-Коммит: будет указан после публикации этой версии
+Коммит: 8f30f062ae207f4ff7087293a67abd9654ae9d5c
 
 ## Как устроено
 
