@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { dbOperations } from './db.js';
 import { cropToPortrait34 } from './photo.js';
-import { isMeaningfulText, validatePhone } from './phone.js';
+import { isMeaningfulText, normalizeWebsite, validatePhone } from './phone.js';
 import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry, isEmployerVerified } from './egrul.js';
 import {
   buildEsiaAuthUrl,
@@ -352,6 +352,7 @@ function publicVacancy(vacancy, viewerId = null) {
   return {
     ...(owned ? vacancy : safe),
     company_name: employer?.company_name || 'Компания не указана',
+    company_website: employer?.website || '',
     company_verified: isEmployerVerified(employer),
     verification_label: owned ? verificationLabel(employer) : publicVerificationLabel(employer),
     contacts_hidden: !owned
@@ -577,8 +578,13 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'POST' && pathname === '/api/employer-profile') {
-    const { company_name, industry, description, contact_person, phone, inn, legal_address, director_fio } = body;
+    const { company_name, industry, description, contact_person, phone, inn, legal_address, director_fio, website } = body;
     const phoneCheck = validatePhone(phone);
+    const site = normalizeWebsite(website);
+    if (!site.ok) {
+      sendJson(res, 400, { error: site.error });
+      return;
+    }
     if (!company_name || !industry || !description || !contact_person || !phoneCheck.ok) {
       sendJson(res, 400, { error: phoneCheck.ok ? 'Заполните все поля компании' : phoneCheck.error });
       return;
@@ -592,7 +598,7 @@ async function handleApi(req, res, url) {
       return;
     }
     dbOperations.addEmployerProfile(userId, company_name, industry, description, contact_person, phoneCheck.phone, {
-      inn, legal_address, director_fio
+      inn, legal_address, director_fio, website: site.website
     });
     dbOperations.updateUserRole(userId, 'employer');
     const result = await verifyEmployerRegistry({ inn, directorFio: director_fio, legalAddress: legal_address });

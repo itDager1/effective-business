@@ -63,6 +63,7 @@ export function incomingMatchText(match) {
   return `📩 Компания «${employer?.company_name || 'Работодатель'}» откликнулась на вашу анкету\n` +
     `${publicVerificationLabel(employer)}\n\n` +
     `Вакансия: ${job}\n` +
+    `${employer?.website ? `Сайт: ${employer.website}\n` : ''}` +
     `Описание: ${vacancy?.description || '—'}\n` +
     `Требования: ${vacancy?.requirements || '—'}\n` +
     `Место: ${vacancy?.location || '—'}\n` +
@@ -80,6 +81,7 @@ export function sharedContactsText(match) {
     `Вакансия: ${vacancy?.job_title || '—'}\n\n` +
     `Соискатель: ${worker?.full_name || '—'}\n${gosuslugiStatusLine(worker)}\nТелефон: ${worker?.phone || '—'}\n\n` +
     `Компания: ${employer?.company_name || '—'}\n${publicVerificationLabel(employer)}\n` +
+    `${employer?.website ? `Сайт: ${employer.website}\n` : ''}` +
     formatVacancyContactLines(contact);
 }
 

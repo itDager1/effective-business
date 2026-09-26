@@ -5,7 +5,7 @@ import { dbOperations } from './db.js';
 import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
-import { isMeaningfulText, validatePhone } from './phone.js';
+import { isMeaningfulText, normalizeWebsite, validatePhone } from './phone.js';
 import { isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
 import {
@@ -406,7 +406,8 @@ function saveEmployer(userId, data) {
     {
       inn: data.inn,
       legal_address: data.legal_address || data.legalAddress,
-      director_fio: data.director_fio || data.directorFio
+      director_fio: data.director_fio || data.directorFio,
+      website: data.website || ''
     }
   );
 }
@@ -545,9 +546,10 @@ function formatEmployerProfileText(profile) {
     `5. Юридический адрес: ${profile.legal_address || '—'}\n` +
     `6. ФИО руководителя: ${profile.director_fio || '—'}\n` +
     `7. Контактное лицо: ${profile.contact_person}\n` +
-    `8. Телефон: ${profile.phone}\n\n` +
+    `8. Телефон: ${profile.phone}\n` +
+    `9. Сайт: ${profile.website || '—'}\n\n` +
     `${verificationLabel(profile)}\n\n` +
-    `Напишите номер пункта, чтобы изменить (1-8).`;
+    `Напишите номер пункта, чтобы изменить (1-9).`;
 }
 
 function employerProfileButtons() {
@@ -710,6 +712,9 @@ function fillActionKeyboard(state) {
   if (state === 'worker_asking_about') {
     rows.push([{ type: 'callback', text: 'Пропустить', payload: 'skip_about' }]);
   }
+  if (state === 'employer_asking_website') {
+    rows.push([{ type: 'callback', text: 'Пропустить', payload: 'skip_website' }]);
+  }
   if (state === 'worker_asking_photo') {
     rows.push([{ type: 'callback', text: 'Пропустить', payload: 'skip_photo' }]);
   }
@@ -756,7 +761,8 @@ const EMPLOYER_STEP_PROMPTS = {
   employer_asking_address: '5️⃣ Юридический адрес, как в ЕГРЮЛ или ЕГРИП: регион, город, улица, дом.',
   employer_asking_director: '6️⃣ ФИО руководителя (для юрлица) или ФИО ИП — как в реестре.',
   employer_asking_contact: '7️⃣ Контактное лицо для связи с соискателями? Если это руководитель, напишите «тот же».',
-  employer_asking_phone: '8️⃣ Телефон компании? Российский или зарубежный, с кодом страны: +7…, +375…, +49…'
+  employer_asking_phone: '8️⃣ Телефон компании? Российский или зарубежный, с кодом страны: +7…, +375…, +49…',
+  employer_asking_website: '9️⃣ Сайт компании? Отправьте ссылку, например https://company.ru. Можно пропустить.'
 };
 
 function setFillState(userId, state, data) {
@@ -1583,6 +1589,7 @@ function formatVacancyCard(vacancy, index, total) {
   return `💼 Вакансия\n\n` +
     `Должность: ${vacancy.job_title}\n` +
     `Компания: ${company}\n` +
+    `${employer?.website ? `Сайт: ${employer.website}\n` : ''}` +
     `${publicVerificationLabel(employer)}\n` +
     `Описание: ${vacancy.description}\n` +
     `Требования: ${vacancy.requirements}\n` +
@@ -3027,6 +3034,31 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
 
+  if (payload === 'skip_website') {
+    const state = userStates.get(userId);
+    if (state === 'employer_asking_website') {
+      const data = userStates.get(`${userId}_data`) || {};
+      data.website = '';
+      await finishEmployerProfileCreation(ctx, userId, data);
+      return;
+    }
+    if (state === 'edit_employer_field_9') {
+      const editData = userStates.get(`${userId}_edit_employer_data`);
+      if (editData) {
+        editData.website = '';
+        saveEmployer(userId, editData);
+      }
+      userStates.delete(userId);
+      userStates.delete(`${userId}_edit_employer_data`);
+      await ctx.reply('Сайт убран из профиля.');
+      const profile = dbOperations.getEmployerProfile(userId);
+      await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons());
+      userStates.set(userId, 'editing_employer_profile_choice');
+      return;
+    }
+    return;
+  }
+
   if (payload === 'skip_about') {
     const state = userStates.get(userId);
     if (state === 'worker_asking_about') {
@@ -3519,6 +3551,18 @@ bot.on('message_created', async (ctx) => {
       return;
     }
     data.phone = phone.phone;
+    setFillState(userId, 'employer_asking_website', data);
+    await promptProfileStep(ctx, 'employer_asking_website');
+    return;
+  }
+
+  if (state === 'employer_asking_website') {
+    const site = normalizeWebsite(text);
+    if (!site.ok) {
+      await ctx.reply(site.error);
+      return;
+    }
+    data.website = site.website;
     await finishEmployerProfileCreation(ctx, userId, data);
     return;
   }
@@ -3526,8 +3570,8 @@ bot.on('message_created', async (ctx) => {
   if (state === 'editing_employer_profile_choice') {
     const choice = parseInt(text);
     const profile = dbOperations.getEmployerProfile(userId);
-    if (isNaN(choice) || choice < 1 || choice > 8) {
-      await ctx.reply('Пожалуйста, введите число от 1 до 8.');
+    if (isNaN(choice) || choice < 1 || choice > 9) {
+      await ctx.reply('Пожалуйста, введите число от 1 до 9.');
       return;
     }
     if (!userStates.has(`${userId}_edit_employer_data`)) {
@@ -3541,15 +3585,16 @@ bot.on('message_created', async (ctx) => {
       5: ['edit_employer_field_5', 'Введите юридический адрес:'],
       6: ['edit_employer_field_6', 'Введите ФИО руководителя:'],
       7: ['edit_employer_field_7', 'Введите контактное лицо:'],
-      8: ['edit_employer_field_8', 'Введите реальный телефон с кодом страны, например +7 921 123-45-67 или +1 415 555 2671:']
+      8: ['edit_employer_field_8', 'Введите реальный телефон с кодом страны, например +7 921 123-45-67 или +1 415 555 2671:'],
+      9: ['edit_employer_field_9', 'Отправьте ссылку на сайт компании, например https://company.ru. «-» — убрать сайт.']
     };
     const [nextState, prompt] = prompts[choice];
     userStates.set(userId, nextState);
-    await ctx.reply(prompt);
+    await ctx.reply(prompt, choice === 9 ? skipKeyboard('skip_website') : undefined);
     return;
   }
   
-  if (/^edit_employer_field_[1-8]$/.test(state)) {
+  if (/^edit_employer_field_[1-9]$/.test(state)) {
     const editData = userStates.get(`${userId}_edit_employer_data`);
     if (state === 'edit_employer_field_3' && !isMeaningfulText(text, 40)) {
       await ctx.reply('Опишите компанию подробнее, не короче 40 символов.');
@@ -3569,6 +3614,13 @@ bot.on('message_created', async (ctx) => {
         return;
       }
       editData.phone = phone.phone;
+    } else if (state === 'edit_employer_field_9') {
+      const site = normalizeWebsite(text);
+      if (!site.ok) {
+        await ctx.reply(site.error);
+        return;
+      }
+      editData.website = site.website;
     } else if (state === 'edit_employer_field_1') editData.company_name = text;
     else if (state === 'edit_employer_field_2') editData.industry = text;
     else if (state === 'edit_employer_field_3') editData.description = text;

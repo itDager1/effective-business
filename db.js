@@ -262,6 +262,7 @@ export const dbOperations = {
     const inn = extras.inn !== undefined ? String(extras.inn).replace(/\D/g, '') : (existing?.inn || '');
     const legalAddress = extras.legal_address !== undefined ? extras.legal_address : (existing?.legal_address || '');
     const directorFio = extras.director_fio !== undefined ? extras.director_fio : (existing?.director_fio || '');
+    const website = extras.website !== undefined ? extras.website : (existing?.website || '');
     const legalChanged = existing && (
       inn !== (existing.inn || '')
       || legalAddress !== (existing.legal_address || '')
@@ -276,6 +277,7 @@ export const dbOperations = {
       existing.inn = inn;
       existing.legal_address = legalAddress;
       existing.director_fio = directorFio;
+      existing.website = website;
       if (legalChanged) {
         existing.verification = {
           status: 'pending',
@@ -295,6 +297,7 @@ export const dbOperations = {
         inn,
         legal_address: legalAddress,
         director_fio: directorFio,
+        website,
         verification: { status: 'pending' },
         created_at: new Date().toISOString()
       });

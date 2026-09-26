@@ -180,6 +180,7 @@ function jobCard(job, index, total) {
       <div class="${job.company_verified ? 'rec' : 'warn'}">${escapeHtml(job.verification_label || '⚠️ Компания не подтверждена по ЕГРЮЛ/ЕГРИП')}</div>
       <div class="meta">
         ${escapeHtml(job.company_name)} · ${escapeHtml(job.location)} · ${escapeHtml(job.salary)}<br>
+        ${job.company_website ? `<a href="${escapeHtml(job.company_website)}" target="_blank" rel="noopener">Сайт компании</a><br>` : ''}
         Сезонность: ${escapeHtml(job.seasonality)}
         ${job.distance_label ? `<br>${escapeHtml(job.distance_label)}` : ''}
       </div>
@@ -417,6 +418,7 @@ function employerHome() {
       <label>ФИО руководителя / ИП <input name="director_fio" value="${escapeHtml(e.director_fio)}" required></label>
       <label>Контактное лицо <input name="contact_person" value="${escapeHtml(e.contact_person)}" required></label>
       <label>Телефон <input name="phone" value="${escapeHtml(e.phone)}" required placeholder="+7 921 123-45-67 или +48 501 234 567"></label>
+      <label>Сайт компании <input name="website" value="${escapeHtml(e.website)}" placeholder="https://company.ru — можно не заполнять"></label>
       <button class="btn primary" type="submit">${exists ? 'Сохранить и проверить' : 'Создать и проверить по ЕГРЮЛ'}</button>
     </form>
     ${exists ? '<div class="row"><button class="btn ghost" data-act="egrul">Проверить по ЕГРЮЛ/ЕГРИП</button></div>' : ''}

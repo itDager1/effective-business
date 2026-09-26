@@ -152,6 +152,27 @@ export function validatePhone(raw) {
   return { ok: true, phone: formatPhone(digits), digits };
 }
 
+export function normalizeWebsite(raw) {
+  const text = String(raw || '').trim();
+  if (!text || text === '-' || text.toLowerCase() === 'пропустить' || text.toLowerCase() === 'пропуск') {
+    return { ok: true, website: '' };
+  }
+  const withScheme = /^https?:\/\//i.test(text) ? text : `https://${text}`;
+  let parsed;
+  try {
+    parsed = new URL(withScheme);
+  } catch {
+    return { ok: false, error: 'Не получилось разобрать ссылку. Пример: https://company.ru' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { ok: false, error: 'Нужна ссылка http:// или https://, например https://company.ru' };
+  }
+  if (!parsed.hostname || !parsed.hostname.includes('.') || parsed.hostname.endsWith('.')) {
+    return { ok: false, error: 'Укажите адрес сайта, например https://company.ru' };
+  }
+  return { ok: true, website: parsed.href };
+}
+
 export function isMeaningfulText(raw, minLen = 40) {
   const text = String(raw || '').replace(/\s+/g, ' ').trim();
   if (text.length < minLen) return false;
