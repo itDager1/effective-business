@@ -421,7 +421,7 @@ function employerHome() {
       <label>Сайт компании <input name="website" value="${escapeHtml(e.website)}" placeholder="https://company.ru — можно не заполнять"></label>
       <button class="btn primary" type="submit">${exists ? 'Сохранить и проверить' : 'Создать и проверить по ЕГРЮЛ'}</button>
     </form>
-    ${exists ? '<div class="row"><button class="btn ghost" data-act="egrul">Проверить по ЕГРЮЛ/ЕГРИП</button></div>' : ''}
+    ${exists && !verified ? '<div class="row"><button class="btn ghost" data-act="egrul">Проверить по ЕГРЮЛ/ЕГРИП</button></div>' : ''}
     <div class="row"><button class="btn ghost" data-go="switch">Сменить роль</button></div>
   `, 'employer', 'home');
 }

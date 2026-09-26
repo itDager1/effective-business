@@ -6,7 +6,7 @@ import { startMiniAppServer, gosuslugiStartUrl } from './miniapp-server.js';
 import { ensurePortraitPhoto, processPortraitPhoto, pickBestImageUrl } from './photo.js';
 import { formatLaborBook, gosuslugiStatusLine, esiaConfigured, isGosuslugiVerified } from './esia.js';
 import { normalizeWebsite, validatePhone } from './phone.js';
-import { hasPostalIndex, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
+import { hasPostalIndex, isEmployerVerified, isValidInn, vacancyGateMessage, verificationLabel, publicVerificationLabel, verifyEmployerRegistry } from './egrul.js';
 import { interpretCity, locate, popularCities } from './cities.js';
 import {
   formatMatchTitle,
@@ -441,18 +441,20 @@ async function finishEmployerProfileCreation(ctx, userId, data) {
     const errText = String(result.error || 'Данные не совпали с реестром.').slice(0, 400);
     await safeReply(ctx, `Профиль компании сохранён, но компания не подтверждена.\nПроверка ЕГРЮЛ/ЕГРИП: ${errText}\nВакансии размещать можно — соискатели увидят в них пометку «Компания не подтверждена».`);
   }
+  const afterCreate = [[
+    { type: 'callback', text: 'Разместить вакансию', payload: 'post_vacancy' }
+  ]];
+  if (!result.ok) {
+    afterCreate[0].push({ type: 'callback', text: 'Проверить ещё раз', payload: 'verify_egrul' });
+  }
+  afterCreate.push([
+    { type: 'callback', text: 'Профиль компании', payload: 'view_employer_profile' },
+    { type: 'callback', text: 'Назад в меню', payload: 'back_to_menu' }
+  ]);
   await safeReply(ctx, 'Что вы хотите сделать?', {
     attachments: [{
       type: 'inline_keyboard',
-      payload: {
-        buttons: [[
-          { type: 'callback', text: 'Разместить вакансию', payload: 'post_vacancy' },
-          { type: 'callback', text: 'Проверить ещё раз', payload: 'verify_egrul' }
-        ], [
-          { type: 'callback', text: 'Профиль компании', payload: 'view_employer_profile' },
-          { type: 'callback', text: 'Назад в меню', payload: 'back_to_menu' }
-        ]]
-      }
+      payload: { buttons: afterCreate }
     }]
   });
 }
@@ -552,20 +554,22 @@ function formatEmployerProfileText(profile) {
     `Напишите номер пункта, чтобы изменить (1-9).`;
 }
 
-function employerProfileButtons() {
-  return {
-    attachments: [{
-      type: 'inline_keyboard',
-      payload: {
-        buttons: [
-          [{ type: 'callback', text: 'Проверить по ЕГРЮЛ/ЕГРИП', payload: 'verify_egrul' }],
+function employerProfileButtons(profile) {
+  const buttons = [];
+  if (!isEmployerVerified(profile)) {
+    buttons.push([{ type: 'callback', text: 'Проверить по ЕГРЮЛ/ЕГРИП', payload: 'verify_egrul' }]);
+  }
+  buttons.push(
           [
             { type: 'callback', text: 'Удалить профиль', payload: 'delete_employer_profile_confirm' },
             { type: 'callback', text: 'Назад', payload: 'back_to_menu' }
           ],
           [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]
-        ]
-      }
+  );
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: { buttons }
     }]
   };
 }
@@ -2594,7 +2598,7 @@ bot.on('message_callback', async (ctx) => {
       return;
     }
     
-    await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons());
+    await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons(profile));
     userStates.set(userId, 'editing_employer_profile_choice');
     return;
   }
@@ -3052,7 +3056,7 @@ bot.on('message_callback', async (ctx) => {
       userStates.delete(`${userId}_edit_employer_data`);
       await ctx.reply('Сайт убран из профиля.');
       const profile = dbOperations.getEmployerProfile(userId);
-      await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons());
+      await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons(profile));
       userStates.set(userId, 'editing_employer_profile_choice');
       return;
     }
@@ -3652,7 +3656,7 @@ bot.on('message_created', async (ctx) => {
         : `❌ Проверка не пройдена.\n${result.error || 'Данные не совпали с реестром.'}`);
     }
     const profile = dbOperations.getEmployerProfile(userId);
-    await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons());
+    await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons(profile));
     userStates.set(userId, 'editing_employer_profile_choice');
     return;
   }
