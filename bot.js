@@ -3859,8 +3859,11 @@ async function recheckEmployerRegistry() {
   egrulRecheckRunning = true;
   try {
     for (const employer of dbOperations.getEmployersAwaitingVerification()) {
+      const previousStatus = employer.verification?.status || '';
+      const previousError = employer.verification?.error || '';
       const result = await verifyAndStoreEmployer(employer.user_id);
       if (result.status === 'unavailable') break;
+      if (result.status === previousStatus && (result.error || '') === previousError) continue;
       const text = result.ok
         ? `✅ Компания «${employer.company_name}» подтверждена по ${result.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ'}. Пометка в вакансиях обновлена.`
         : `❌ Компания «${employer.company_name}» не подтверждена по ЕГРЮЛ/ЕГРИП.\n${result.error || ''}\nИсправьте данные в профиле компании и нажмите «Проверить по ЕГРЮЛ/ЕГРИП».`;

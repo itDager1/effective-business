@@ -327,7 +327,7 @@ export const dbOperations = {
 
   getEmployersAwaitingVerification: () => database.employers.filter((e) =>
     e.inn && e.director_fio && e.legal_address
-    && (!e.verification || ['pending', 'unavailable'].includes(e.verification.status) || e.verification.demo)
+    && (!e.verification || ['pending', 'unavailable', 'failed'].includes(e.verification.status) || e.verification.demo)
   ),
 
   addVacancy: (employerId, jobTitle, description, requirements, location, salary, seasonality, contact = {}) => {

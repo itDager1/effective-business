@@ -92,6 +92,13 @@ export function addressMatches(claimed, official) {
   return hit >= 2 && hit / a.length >= 0.55;
 }
 
+export function regionMatches(claimed, region) {
+  const expected = addressTokens(region).filter((token) => token.length >= 5);
+  if (!expected.length) return null;
+  const claimedTokens = new Set(addressTokens(claimed));
+  return expected.every((token) => claimedTokens.has(token));
+}
+
 async function fnsSearch(query) {
   const body = new URLSearchParams({
     query,
@@ -150,6 +157,7 @@ function parseRow(row, inn) {
     ogrn: String(row.o || row.c || ''),
     name: String(row.n || ''),
     address: String(row.a || ''),
+    region: String(row.rn || ''),
     director: String(row.g || (isIp ? row.n : '') || ''),
     registry: isIp ? 'egrip' : 'egrul'
   };
@@ -201,7 +209,16 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
 
   const directorOfficial = record.registry === 'egrip' ? `${record.director} ${record.name}` : record.director;
   const directorMatch = fioMatches(directorFio, directorOfficial);
-  const addressMatch = addressMatches(legalAddress, record.address);
+  const streetPublished = Boolean(record.address);
+  const regionOnly = !streetPublished && Boolean(record.region);
+  const regionOk = regionMatches(legalAddress, record.region);
+  const addressMatch = streetPublished
+    ? addressMatches(legalAddress, record.address)
+    : (regionOnly ? regionOk === true : true);
+  const registryPlace = streetPublished
+    ? record.address
+    : (record.region ? `регион ${record.region}` : '');
+  const found = record.name ? `По ИНН найдена «${record.name}». ` : '';
   const ok = directorMatch && addressMatch;
   return {
     ok,
@@ -210,7 +227,7 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
     director_match: directorMatch,
     address_match: addressMatch,
     fetched_name: record.name,
-    fetched_address: record.address,
+    fetched_address: record.address || record.region || '',
     fetched_director: record.director,
     ogrn: record.ogrn,
     inn: record.inn,
@@ -218,8 +235,8 @@ async function verifyEmployerRegistryUnsafe({ inn, directorFio, legalAddress }) 
     error: ok
       ? null
       : [
-          directorMatch ? null : 'ФИО руководителя не совпадает с записью в реестре',
-          addressMatch ? null : 'Юридический адрес не совпадает с записью в реестре'
+          directorMatch ? null : `${found}ФИО руководителя не совпадает с записью в реестре`,
+          addressMatch ? null : `${found}Юридический адрес не совпадает с записью в реестре${registryPlace ? `: ${registryPlace}` : ''}`
         ].filter(Boolean).join('. ')
   };
 }
