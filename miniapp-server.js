@@ -349,7 +349,7 @@ function verifyMaxPhone({ phone, authDate, hash }, userId) {
 function publicVacancy(vacancy, viewerId = null) {
   if (!vacancy) return null;
   const employer = dbOperations.getEmployerProfile(vacancy.employer_id);
-  const owned = viewerId != null && Number(vacancy.employer_id) === Number(viewerId);
+  const owned = viewerId != null && dbOperations.canActForEmployer(viewerId, vacancy.employer_id);
   const { contact_name, contact_position, contact_phone, ...safe } = vacancy;
   return {
     ...(owned ? vacancy : safe),
@@ -444,7 +444,8 @@ function snapshot(userId) {
     role: user?.role || null,
     worker: publicWorker(dbOperations.getWorkerProfile(userId), userId),
     employer: (() => {
-      const profile = dbOperations.getEmployerProfile(userId);
+      const companyId = dbOperations.managedCompanyId(userId);
+      const profile = companyId ? dbOperations.getEmployerProfile(companyId) : null;
       if (!profile) return null;
       return {
         ...profile,
@@ -638,6 +639,10 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: 'Добавьте почтовый индекс — 6 цифр: индекс, регион, город, улица, дом' });
       return;
     }
+    if (dbOperations.getCompanyGrantForMember(userId)) {
+      sendJson(res, 409, { error: 'У вас уже есть доступ к компании по назначению владельца' });
+      return;
+    }
     dbOperations.addEmployerProfile(userId, company_name, industry, descriptionText, contact_person, phoneCheck.phone, {
       inn, legal_address, director_fio, website: site.website
     });
@@ -758,12 +763,14 @@ async function handleApi(req, res, url) {
   }
 
   if (method === 'GET' && pathname === '/api/my-vacancies') {
-    sendJson(res, 200, { items: dbOperations.getEmployerVacancies(userId).map((v) => publicVacancy(v, userId)) });
+    const companyId = dbOperations.managedCompanyId(userId);
+    sendJson(res, 200, { items: dbOperations.getEmployerVacancies(companyId || userId).map((v) => publicVacancy(v, userId)) });
     return;
   }
 
   if (method === 'POST' && pathname === '/api/vacancies') {
-    const blocked = vacancyGateMessage(dbOperations.getEmployerProfile(userId));
+    const companyId = dbOperations.managedCompanyId(userId);
+    const blocked = vacancyGateMessage(companyId ? dbOperations.getEmployerProfile(companyId) : null);
     if (blocked) {
       sendJson(res, 403, { error: blocked });
       return;
@@ -774,12 +781,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: phoneCheck.ok ? 'Заполните вакансию и контакт сотрудника для связи: имя, должность и телефон' : phoneCheck.error });
       return;
     }
-    dbOperations.addVacancy(userId, job_title, description, requirements, location, salary, seasonality, {
+    dbOperations.addVacancy(companyId, job_title, description, requirements, location, salary, seasonality, {
       contact_name,
       contact_position,
       contact_phone: phoneCheck.phone
     });
-    sendJson(res, 200, { items: dbOperations.getEmployerVacancies(userId).map((v) => publicVacancy(v, userId)) });
+    sendJson(res, 200, { items: dbOperations.getEmployerVacancies(companyId).map((v) => publicVacancy(v, userId)) });
     return;
   }
 

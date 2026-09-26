@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { locate, withDistance } from './cities.js';
+import { samePhone } from './phone.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.DATA_FILE
@@ -20,7 +21,8 @@ let database = {
   profile_drafts: [],
   matches: [],
   staff: [],
-  dev_offers: []
+  dev_offers: [],
+  company_grants: []
 };
 
 function loadDb() {
@@ -35,6 +37,7 @@ function loadDb() {
       if (!database.matches) database.matches = [];
       if (!database.staff) database.staff = [];
       if (!database.dev_offers) database.dev_offers = [];
+      if (!database.company_grants) database.company_grants = [];
       migrateMatches();
     } else {
       saveDb();
@@ -348,6 +351,89 @@ export const dbOperations = {
     return database.employers.find(e => e.user_id === userId) || null;
   },
 
+  managedCompanyId: (userId) => {
+    if (database.employers.some((e) => Number(e.user_id) === Number(userId))) return Number(userId);
+    const grant = (database.company_grants || []).find((g) => g.status === 'active' && Number(g.member_user_id) === Number(userId));
+    return grant ? Number(grant.company_user_id) : null;
+  },
+
+  canActForEmployer: (actorId, employerId) => {
+    if (employerId == null) return false;
+    if (Number(actorId) === Number(employerId)) return true;
+    return (database.company_grants || []).some((g) => (
+      g.status === 'active'
+      && Number(g.member_user_id) === Number(actorId)
+      && Number(g.company_user_id) === Number(employerId)
+    ));
+  },
+
+  getCompanyGrantForMember: (userId) => {
+    return (database.company_grants || []).find((g) => g.status === 'active' && Number(g.member_user_id) === Number(userId)) || null;
+  },
+
+  listCompanyGrants: (companyUserId) => {
+    return (database.company_grants || []).filter((g) => (
+      Number(g.company_user_id) === Number(companyUserId) && g.status !== 'revoked'
+    ));
+  },
+
+  appointCompanyMember: (companyUserId, phone, position) => {
+    if (!database.company_grants) database.company_grants = [];
+    const existing = database.company_grants.find((g) => (
+      Number(g.company_user_id) === Number(companyUserId)
+      && g.status !== 'revoked'
+      && samePhone(g.phone, phone)
+    ));
+    if (existing) {
+      existing.position = position;
+      existing.phone = phone;
+      existing.appointed_at = new Date().toISOString();
+      saveDb();
+      return existing;
+    }
+    const grant = {
+      id: Date.now(),
+      company_user_id: Number(companyUserId),
+      phone,
+      position,
+      member_user_id: null,
+      status: 'pending',
+      appointed_at: new Date().toISOString()
+    };
+    database.company_grants.push(grant);
+    saveDb();
+    return grant;
+  },
+
+  revokeCompanyGrant: (companyUserId, grantId) => {
+    const grant = (database.company_grants || []).find((g) => (
+      Number(g.id) === Number(grantId) && Number(g.company_user_id) === Number(companyUserId) && g.status !== 'revoked'
+    ));
+    if (!grant) return null;
+    grant.status = 'revoked';
+    grant.revoked_at = new Date().toISOString();
+    saveDb();
+    return grant;
+  },
+
+  claimCompanyGrants: (memberUserId, phone) => {
+    if (database.employers.some((e) => Number(e.user_id) === Number(memberUserId))) return [];
+    const grants = (database.company_grants || []).filter((g) => g.status === 'pending' && samePhone(g.phone, phone));
+    if (!grants.length) return [];
+    for (const grant of grants) {
+      grant.status = 'active';
+      grant.member_user_id = Number(memberUserId);
+      grant.accepted_at = new Date().toISOString();
+    }
+    saveDb();
+    return grants;
+  },
+
+  findVerifiedUserByPhone: (phone) => {
+    const worker = database.workers.find((w) => w.phone_verified && samePhone(w.phone, phone));
+    return worker ? worker.user_id : null;
+  },
+
   getEmployersAwaitingVerification: () => database.employers.filter((e) =>
     e.inn && e.director_fio && e.legal_address
     && (!e.verification || ['pending', 'unavailable', 'failed'].includes(e.verification.status) || e.verification.demo)
@@ -374,8 +460,8 @@ export const dbOperations = {
     return vacancy;
   },
 
-  updateVacancy: (vacancyId, employerId, fields = {}) => {
-    const vacancy = database.vacancies.find(v => v.id === vacancyId && v.employer_id === employerId);
+  updateVacancy: (vacancyId, actorId, fields = {}) => {
+    const vacancy = database.vacancies.find((v) => v.id === vacancyId && dbOperations.canActForEmployer(actorId, v.employer_id));
     if (!vacancy) return null;
     const allowed = ['job_title', 'description', 'requirements', 'location', 'salary', 'seasonality', 'contact_name', 'contact_position', 'contact_phone'];
     for (const key of allowed) {
@@ -579,7 +665,9 @@ export const dbOperations = {
       return { ok: false, error: match.status === 'accepted' ? 'Контакты уже открыты' : 'Отклик уже закрыт', match };
     }
     const recipientId = match.initiator_id === match.worker_id ? match.employer_id : match.worker_id;
-    if (Number(actorId) !== Number(recipientId)) {
+    const onCompanySide = Number(actorId) !== Number(match.worker_id)
+      && dbOperations.canActForEmployer(actorId, match.employer_id);
+    if (Number(actorId) !== Number(recipientId) && !onCompanySide) {
       return { ok: false, error: 'Принять или отклонить может только тот, кому отправили отклик', match };
     }
     match.status = status;
@@ -592,7 +680,8 @@ export const dbOperations = {
   cancelAcceptedMatch: (id, actorId) => {
     const match = dbOperations.getMatchById(id);
     if (!match) return { ok: false, error: 'Отклик не найден' };
-    const isParty = Number(actorId) === Number(match.worker_id) || Number(actorId) === Number(match.employer_id);
+    const isParty = Number(actorId) === Number(match.worker_id)
+      || dbOperations.canActForEmployer(actorId, match.employer_id);
     if (!isParty) return { ok: false, error: 'Отменить одобрение может только участник отклика', match };
     if (match.status !== 'accepted') {
       return { ok: false, error: match.status === 'cancelled' ? 'Одобрение уже отменено' : 'Отменить можно только принятый отклик', match };
@@ -654,6 +743,11 @@ export const dbOperations = {
       database.favorites = (database.favorites || []).filter(f => !removedIds.includes(f.vacancy_id));
       database.applications = (database.applications || []).filter(a => !removedIds.includes(a.vacancy_id));
       database.employers.splice(index, 1);
+      database.company_grants = (database.company_grants || []).map((grant) => (
+        Number(grant.company_user_id) === Number(userId) && grant.status !== 'revoked'
+          ? { ...grant, status: 'revoked', revoked_at: new Date().toISOString() }
+          : grant
+      ));
       saveDb();
       return true;
     }

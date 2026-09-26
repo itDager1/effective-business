@@ -166,7 +166,7 @@ function workerMenuKeyboard(includeSwitch = false, userId = null) {
 
 function employerMenuKeyboard(includeSwitch = false, userId = null) {
   const buttons = [];
-  if (userId && !dbOperations.getEmployerProfile(userId)) {
+  if (userId && !dbOperations.managedCompanyId(userId)) {
     buttons.push([{ type: 'callback', text: '🏢 Создать профиль компании', payload: 'create_profile' }]);
   }
   if (userId && dbOperations.getVacancyDraft(userId)) {
@@ -461,6 +461,7 @@ async function acceptWorkerPhoneContact(ctx, userId, attachment) {
     saveWorker(userId, editData, editData.photo);
     dbOperations.setWorkerPhoneVerified(userId, parsed.phone);
     await ctx.reply(`Номер ${parsed.phone} подтверждён: это телефон, привязанный к вашему аккаунту MAX.`);
+    await openCompanyAccess(ctx, userId, parsed.phone);
     await showOwnProfile(ctx, userId);
     return;
   }
@@ -473,10 +474,79 @@ async function acceptWorkerPhoneContact(ctx, userId, attachment) {
     userStates.set(`${userId}_data`, draft);
   }
   await ctx.reply(`Номер ${parsed.phone} подтверждён: это телефон, привязанный к вашему аккаунту MAX.`);
+  await openCompanyAccess(ctx, userId, parsed.phone);
   if (state === 'worker_asking_phone' && draft) {
     setFillState(userId, 'worker_asking_photo', draft);
     await promptProfileStep(ctx, 'worker_asking_photo');
   }
+}
+
+async function openCompanyAccess(ctx, userId, phone) {
+  const grants = dbOperations.claimCompanyGrants(userId, phone);
+  if (!grants.length) return;
+  dbOperations.updateUserRole(userId, 'employer');
+  const lines = grants.map((grant) => {
+    const company = dbOperations.getEmployerProfile(grant.company_user_id);
+    return `«${company?.company_name || 'компания'}» — ${grant.position}`;
+  }).join('\n');
+  await ctx.reply(`Вам открыт доступ:\n${lines}\nМожно вести вакансии и отклики. Снять роль может только владелец.`);
+}
+
+async function acceptAppointmentContact(ctx, userId, text, contact) {
+  const position = userStates.get(`${userId}_appoint_position`);
+  const profile = dbOperations.getEmployerProfile(userId);
+  if (!profile || !position || !isEmployerVerified(profile)) {
+    userStates.delete(userId);
+    userStates.delete(`${userId}_appoint_position`);
+    await ctx.reply('Назначение прервано. Откройте профиль компании ещё раз.');
+    return;
+  }
+  let phoneRaw = text;
+  if (contact) {
+    const payload = contact.payload || contact;
+    const vcf = payload.vcf_info || payload.vcfInfo || '';
+    const hash = payload.hash || '';
+    const token = String(process.env.BOT_TOKEN || '').trim();
+    const shared = phoneFromVcard(vcf) || payload.vcf_phone || payload.phone || '';
+    if (verifyMaxContact(vcf, hash, token)) {
+      await ctx.reply('Это номер вашего аккаунта MAX. Нужен контакт другого человека или его номер.');
+      return;
+    }
+    phoneRaw = shared;
+  }
+  const phone = validatePhone(phoneRaw);
+  if (!phone.ok) {
+    await ctx.reply(contact ? 'В контакте нет номера. Напишите телефон сотрудника.' : phone.error);
+    return;
+  }
+  const ownWorker = dbOperations.getWorkerProfile(userId);
+  if (ownWorker?.phone && samePhone(ownWorker.phone, phone.phone)) {
+    await ctx.reply('Это ваш номер. Назначить можно другого человека.');
+    return;
+  }
+  const existingUser = dbOperations.findVerifiedUserByPhone(phone.phone);
+  if (existingUser && dbOperations.getEmployerProfile(existingUser)) {
+    await ctx.reply('Этот номер уже принадлежит владельцу другой компании. Назначить его нельзя.');
+    return;
+  }
+  const grant = dbOperations.appointCompanyMember(userId, phone.phone, position);
+  userStates.delete(userId);
+  userStates.delete(`${userId}_appoint_position`);
+  if (grant.status === 'active') {
+    await ctx.reply(`${position} с номером ${phone.phone} уже имеет доступ к компании. Снять роль можете только вы.`);
+    return;
+  }
+  if (existingUser && Number(existingUser) !== Number(userId)) {
+    const grants = dbOperations.claimCompanyGrants(existingUser, phone.phone);
+    const claimed = grants.find((grant) => Number(grant.company_user_id) === Number(userId));
+    if (claimed) {
+      dbOperations.updateUserRole(existingUser, 'employer');
+      await notifyUser(ctx.api, existingUser, `Вам открыта компания «${profile.company_name}». Должность: ${position}. Можно вести вакансии и отклики. Снять роль может только владелец.`);
+      await ctx.reply(`${position} с номером ${phone.phone} уже в MAX: доступ открыт. Назначить следующего и снять роль можете только вы.`);
+      return;
+    }
+  }
+  await ctx.reply(`${position} с номером ${phone.phone} назначен. Доступ откроется, когда этот человек подтвердит тот же номер в боте. Назначить следующего и снять роль можете только вы.`);
 }
 
 function saveEmployer(userId, data) {
@@ -658,7 +728,13 @@ function formatWorkerCardText(worker, index, total, viewerId = null) {
     `(${index + 1} из ${total})`;
 }
 
-function formatEmployerProfileText(profile) {
+function formatEmployerProfileText(profile, owner = true, position = '') {
+  const access = owner
+    ? (isEmployerVerified(profile)
+      ? 'Назначить сотрудника можно кнопкой ниже. ЕГРЮЛ должность кадровика не содержит: доступ даёт владелец.'
+      : 'Назначение сотрудников откроется после подтверждения компании по ЕГРЮЛ или ЕГРИП.')
+    : `Ваша должность: ${position || 'сотрудник'}. Вакансии и отклики доступны. Назначить или снять роль может только владелец.`;
+  const editHint = owner ? 'Напишите номер пункта, чтобы изменить (1-9).\n' : '';
   return `Профиль компании:\n` +
     `1. Название: ${profile.company_name}\n` +
     `2. Отрасль: ${profile.industry}\n` +
@@ -669,22 +745,29 @@ function formatEmployerProfileText(profile) {
     `7. Контактное лицо: ${profile.contact_person}\n` +
     `8. Телефон: ${profile.phone}\n` +
     `9. Сайт: ${profile.website || '—'}\n\n` +
-    `${verificationLabel(profile)}\n\n` +
-    `Напишите номер пункта, чтобы изменить (1-9).`;
+    `${verificationLabel(profile)}\n` +
+    `${access}\n\n` +
+    editHint;
 }
 
-function employerProfileButtons(profile) {
+function employerProfileButtons(profile, owner = true) {
   const buttons = [];
-  if (!isEmployerVerified(profile)) {
+  if (owner && !isEmployerVerified(profile)) {
     buttons.push([{ type: 'callback', text: 'Проверить по ЕГРЮЛ/ЕГРИП', payload: 'verify_egrul' }]);
   }
-  buttons.push(
-          [
-            { type: 'callback', text: 'Удалить профиль', payload: 'delete_employer_profile_confirm' },
-            { type: 'callback', text: 'Назад', payload: 'back_to_menu' }
-          ],
-          [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]
-  );
+  if (owner && isEmployerVerified(profile)) {
+    buttons.push([{ type: 'callback', text: 'Назначить сотрудника', payload: 'appoint_member' }]);
+    buttons.push([{ type: 'callback', text: 'Доступ сотрудников', payload: 'company_access' }]);
+  }
+  if (owner) {
+    buttons.push([
+      { type: 'callback', text: 'Удалить профиль', payload: 'delete_employer_profile_confirm' },
+      { type: 'callback', text: 'Назад', payload: 'back_to_menu' }
+    ]);
+  } else {
+    buttons.push([{ type: 'callback', text: 'Назад', payload: 'back_to_menu' }]);
+  }
+  buttons.push([{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]);
   return {
     attachments: [{
       type: 'inline_keyboard',
@@ -694,7 +777,8 @@ function employerProfileButtons(profile) {
 }
 
 async function denyUnverifiedVacancy(ctx, userId) {
-  const profile = dbOperations.getEmployerProfile(userId);
+  const companyId = dbOperations.managedCompanyId(userId);
+  const profile = companyId ? dbOperations.getEmployerProfile(companyId) : null;
   if (!profile) {
     await askToCreateProfile(ctx, userId, 'разместить вакансию');
     return true;
@@ -716,8 +800,9 @@ async function denyUnverifiedVacancy(ctx, userId) {
 }
 
 function workerBrowseButtons(employerId, worker) {
-  const vacancies = dbOperations.getEmployerVacancies(employerId);
-  const offered = worker && vacancies.some((v) => dbOperations.hasOffered(employerId, worker.user_id, v.id));
+  const companyId = dbOperations.managedCompanyId(employerId) || employerId;
+  const vacancies = dbOperations.getEmployerVacancies(companyId);
+  const offered = worker && vacancies.some((v) => dbOperations.hasOffered(companyId, worker.user_id, v.id));
   return [
     [
       { type: 'callback', text: '◀️ Предыдущий', payload: 'prev_worker' },
@@ -760,7 +845,8 @@ async function showCurrentWorker(ctx, employerId) {
 }
 
 function startWorkerSearch(employerId) {
-  const list = dbOperations.getRankedWorkers(employerId, searchFilters(employerId, getWorkerFilters(employerId)));
+  const companyId = dbOperations.managedCompanyId(employerId) || employerId;
+  const list = dbOperations.getRankedWorkers(companyId, searchFilters(employerId, getWorkerFilters(employerId)));
   userStates.set(employerId, 'browsing_workers');
   userStates.set(`${employerId}_workers_list`, list);
   userStates.set(`${employerId}_worker_index`, 0);
@@ -1126,6 +1212,11 @@ async function startProfileCreation(ctx, userId) {
   const user = dbOperations.getUser(userId);
   if (user?.role === 'worker' && dbOperations.getWorkerProfile(userId)) return false;
   if (user?.role === 'employer' && dbOperations.getEmployerProfile(userId)) return false;
+  if (user?.role === 'employer' && dbOperations.getCompanyGrantForMember(userId)) {
+    await ctx.reply('У вас уже есть доступ к компании: вакансии и отклики открыты по назначению владельца. Отдельный профиль создавать не нужно.');
+    await replyRoleMenu(ctx, userId);
+    return true;
+  }
   if (await maybeOfferIncompleteProfile(ctx, userId, user?.role)) return true;
   if (user?.role === 'worker') {
     setFillState(userId, 'worker_asking_name', {});
@@ -1301,7 +1392,8 @@ async function finishPhotoEdit(ctx, userId, photo, keepExisting = false) {
 }
 
 async function sendVacancyOffer(ctx, employerId, worker, vacancy) {
-  const created = dbOperations.addOffer(employerId, worker.user_id, vacancy.id);
+  const companyId = dbOperations.managedCompanyId(employerId) || employerId;
+  const created = dbOperations.addOffer(companyId, worker.user_id, vacancy.id);
   if (!created?.ok) {
     await ctx.reply(created?.reason === 'accepted'
       ? 'Контакты по этой вакансии уже открыты.'
@@ -1325,8 +1417,11 @@ function formatMatchListItem(match, i) {
 }
 
 async function showMatchesMenu(ctx, userId) {
-  const incoming = dbOperations.getIncomingMatches(userId);
-  const outgoing = dbOperations.getOutgoingMatches(userId);
+  const companyId = dbOperations.getUser(userId)?.role === 'employer'
+    ? (dbOperations.managedCompanyId(userId) || userId)
+    : userId;
+  const incoming = dbOperations.getIncomingMatches(companyId);
+  const outgoing = dbOperations.getOutgoingMatches(companyId);
   userStates.set(`${userId}_match_in`, incoming);
   userStates.set(`${userId}_match_out`, outgoing);
   const pendingIn = incoming.filter((m) => m.status === 'pending').length;
@@ -1400,10 +1495,11 @@ async function showMatchGroup(ctx, userId, group) {
 
 function matchNavButtons(match, userId) {
   const buttons = [];
+  const onCompanySide = dbOperations.canActForEmployer(userId, match.employer_id);
   const isRecipient = Number(match.initiator_id) !== Number(userId)
-    && (match.worker_id === userId || match.employer_id === userId);
-  const isEmployer = Number(userId) === Number(match.employer_id);
-  const isParty = Number(match.worker_id) === Number(userId) || Number(match.employer_id) === Number(userId);
+    && (Number(match.worker_id) === Number(userId) || onCompanySide);
+  const isEmployer = onCompanySide;
+  const isParty = Number(match.worker_id) === Number(userId) || onCompanySide;
   if (isRecipient && match.status === 'pending') {
     buttons.push([
       { type: 'callback', text: 'Принять', payload: `acc_${match.id}` },
@@ -1434,8 +1530,9 @@ async function showMatchCard(ctx, userId, matchId) {
     await ctx.reply('Отклик не найден.');
     return;
   }
+  const onCompanySide = dbOperations.canActForEmployer(userId, match.employer_id);
   const isRecipient = Number(match.initiator_id) !== Number(userId)
-    && (match.worker_id === userId || match.employer_id === userId);
+    && (Number(match.worker_id) === Number(userId) || onCompanySide);
   let text = `${formatMatchTitle(match)}\nСтатус: ${matchStatusLabel(match.status)}`;
   if (match.status === 'cancelled') {
     text += '\n\nОдобрение отменено. Контакты снова скрыты.';
@@ -1455,7 +1552,7 @@ async function showMatchContacts(ctx, userId, matchId) {
     await ctx.reply('Отклик не найден.');
     return;
   }
-  const isParty = Number(match.worker_id) === Number(userId) || Number(match.employer_id) === Number(userId);
+  const isParty = Number(match.worker_id) === Number(userId) || dbOperations.canActForEmployer(userId, match.employer_id);
   if (!isParty) {
     await ctx.reply('Это не ваш отклик.');
     return;
@@ -1466,7 +1563,7 @@ async function showMatchContacts(ctx, userId, matchId) {
     });
     return;
   }
-  const text = Number(userId) === Number(match.employer_id)
+  const text = dbOperations.canActForEmployer(userId, match.employer_id)
     ? employerAcceptedNotice(match)
     : workerAcceptedNotice(match);
   await ctx.reply(text, {
@@ -1549,8 +1646,9 @@ async function handleCancelAcceptedMatch(ctx, userId, matchId) {
 }
 
 async function showCompanyStaff(ctx, userId) {
-  const list = dbOperations.getCompanyStaff(userId);
-  const company = dbOperations.getEmployerProfile(userId)?.company_name || 'компании';
+  const companyId = dbOperations.managedCompanyId(userId) || userId;
+  const list = dbOperations.getCompanyStaff(companyId);
+  const company = dbOperations.getEmployerProfile(companyId)?.company_name || 'компании';
   if (!list.length) {
     await ctx.reply(`В штате «${company}» пока никого нет. Сотрудник появится здесь после принятия отклика или приглашения.`, {
       attachments: [{
@@ -1585,7 +1683,7 @@ async function showCompanyStaff(ctx, userId) {
 
 async function showStaffCard(ctx, userId, staffId) {
   const row = dbOperations.getStaffById(staffId);
-  if (!row || Number(row.employer_id) !== Number(userId) || row.status !== 'active') {
+  if (!row || !dbOperations.canActForEmployer(userId, row.employer_id) || row.status !== 'active') {
     await ctx.reply('Сотрудник не найден в штате.');
     return;
   }
@@ -1608,7 +1706,7 @@ async function showStaffCard(ctx, userId, staffId) {
 
 async function startStaffDevelopmentOffer(ctx, userId, staffId, kind) {
   const row = dbOperations.getStaffById(staffId);
-  if (!row || Number(row.employer_id) !== Number(userId) || row.status !== 'active') {
+  if (!row || !dbOperations.canActForEmployer(userId, row.employer_id) || row.status !== 'active') {
     await ctx.reply('Сотрудник не найден в штате.');
     return;
   }
@@ -1971,7 +2069,8 @@ function seasonalityKeyboard(prefix = 'season') {
 }
 
 async function showMyVacancies(ctx, userId) {
-  const vacancies = dbOperations.getEmployerVacancies(userId);
+  const companyId = dbOperations.managedCompanyId(userId) || userId;
+  const vacancies = dbOperations.getEmployerVacancies(companyId);
   if (vacancies.length === 0) {
     await ctx.reply('Вакансии еще не размещены.', {
       attachments: [{
@@ -2731,7 +2830,7 @@ bot.on('message_callback', async (ctx) => {
   if (/^editvac_\d+$/.test(payload || '')) {
     const vacancyId = Number(payload.replace('editvac_', ''));
     const vacancy = dbOperations.getVacancyById(vacancyId);
-    if (!vacancy || vacancy.employer_id !== userId) {
+    if (!vacancy || !dbOperations.canActForEmployer(userId, vacancy.employer_id)) {
       await ctx.reply('Вакансия не найдена.');
       return;
     }
@@ -2740,14 +2839,16 @@ bot.on('message_callback', async (ctx) => {
   }
   
   if (payload === 'view_employer_profile') {
-    const profile = dbOperations.getEmployerProfile(userId);
+    const companyId = dbOperations.managedCompanyId(userId);
+    const profile = companyId ? dbOperations.getEmployerProfile(companyId) : null;
     if (!profile) {
       await ctx.reply('Профиля компании пока нет. Создайте его, чтобы размещать вакансии и приглашать работников.', createProfileKeyboard('employer'));
       return;
     }
-    
-    await ctx.reply(formatEmployerProfileText(profile), employerProfileButtons(profile));
-    userStates.set(userId, 'editing_employer_profile_choice');
+    const owner = Number(profile.user_id) === Number(userId);
+    const grant = owner ? null : dbOperations.getCompanyGrantForMember(userId);
+    await ctx.reply(formatEmployerProfileText(profile, owner, grant?.position), employerProfileButtons(profile, owner));
+    if (owner) userStates.set(userId, 'editing_employer_profile_choice');
     return;
   }
   
@@ -3330,7 +3431,99 @@ bot.on('message_callback', async (ctx) => {
     return;
   }
   
+  if (payload === 'appoint_member') {
+    const profile = dbOperations.getEmployerProfile(userId);
+    if (!profile) {
+      await ctx.reply('Назначать сотрудников может только владелец компании.');
+      return;
+    }
+    if (!isEmployerVerified(profile)) {
+      await ctx.reply('Сначала подтвердите компанию по ЕГРЮЛ или ЕГРИП. Реестр не содержит кадровика: доступ второму человеку выдаёт владелец уже проверенной компании.');
+      return;
+    }
+    await ctx.reply('Кого назначить? Этот аккаунт сможет вести вакансии и отклики. Снять роль и назначить следующего можете только вы.', {
+      attachments: [{
+        type: 'inline_keyboard',
+        payload: {
+          buttons: [
+            [{ type: 'callback', text: 'Кадровик', payload: 'appoint_role_hr' }],
+            [{ type: 'callback', text: 'Управляющий', payload: 'appoint_role_lead' }],
+            [{ type: 'callback', text: 'Директор точки', payload: 'appoint_role_site' }],
+            [{ type: 'callback', text: 'Назад', payload: 'view_employer_profile' }]
+          ]
+        }
+      }]
+    });
+    return;
+  }
+
+  if (payload === 'appoint_role_hr' || payload === 'appoint_role_lead' || payload === 'appoint_role_site') {
+    const profile = dbOperations.getEmployerProfile(userId);
+    if (!profile || !isEmployerVerified(profile)) {
+      await ctx.reply('Назначать сотрудников может владелец подтверждённой компании.');
+      return;
+    }
+    const position = payload === 'appoint_role_hr' ? 'Кадровик' : payload === 'appoint_role_lead' ? 'Управляющий' : 'Директор точки';
+    userStates.set(userId, 'appoint_wait_phone');
+    userStates.set(`${userId}_appoint_position`, position);
+    await ctx.reply(`Должность: ${position}. Отправьте контакт этого человека из MAX или напишите его номер.`);
+    return;
+  }
+
+  if (payload === 'company_access') {
+    const profile = dbOperations.getEmployerProfile(userId);
+    if (!profile) {
+      await ctx.reply('Список доступа видит владелец компании.');
+      return;
+    }
+    const grants = dbOperations.listCompanyGrants(userId);
+    if (!grants.length) {
+      await ctx.reply('Пока никого не назначено. ЕГРЮЛ такую должность не отдаёт: человек входит только по вашему приглашению.', {
+        attachments: [{
+          type: 'inline_keyboard',
+          payload: { buttons: [[{ type: 'callback', text: 'Назначить сотрудника', payload: 'appoint_member' }]] }
+        }]
+      });
+      return;
+    }
+    const buttons = grants.map((grant) => [{
+      type: 'callback',
+      text: `Снять: ${grant.position}`.slice(0, 40),
+      payload: `revoke_grant_${grant.id}`
+    }]);
+    buttons.push([{ type: 'callback', text: 'Назначить ещё', payload: 'appoint_member' }]);
+    const lines = grants.map((grant) => (
+      `${grant.position} · ${grant.phone} · ${grant.status === 'active' ? 'доступ открыт' : 'ждёт подтверждения номера'}`
+    )).join('\n');
+    await ctx.reply(`Доступ к «${profile.company_name}»:\n${lines}\n\nСнятие роли закрывает этому аккаунту вакансии и отклики компании.`, {
+      attachments: [{ type: 'inline_keyboard', payload: { buttons } }]
+    });
+    return;
+  }
+
+  if (/^revoke_grant_\d+$/.test(payload || '')) {
+    const profile = dbOperations.getEmployerProfile(userId);
+    if (!profile) {
+      await ctx.reply('Снять роль может только владелец.');
+      return;
+    }
+    const grant = dbOperations.revokeCompanyGrant(userId, payload.replace('revoke_grant_', ''));
+    if (!grant) {
+      await ctx.reply('Назначение не найдено.');
+      return;
+    }
+    if (grant.member_user_id) {
+      await notifyUser(ctx.api, grant.member_user_id, `Владелец снял вашу роль «${grant.position}» в компании «${profile.company_name}». Вакансии и отклики этой компании больше не открыты.`);
+    }
+    await ctx.reply(`Роль «${grant.position}» снята. Этот аккаунт больше не проходит в компанию.`);
+    return;
+  }
+
   if (payload === 'delete_employer_profile_confirm') {
+    if (!dbOperations.getEmployerProfile(userId)) {
+      await ctx.reply('Удалить компанию может только владелец.');
+      return;
+    }
     await ctx.reply('⚠️ Вы уверены, что хотите удалить профиль компании? Все связанные вакансии также будут удалены! Это действие необратимо!', {
       attachments: [{
         type: 'inline_keyboard',
@@ -3442,7 +3635,11 @@ bot.on('message_created', async (ctx) => {
   
   console.log(`[MESSAGE] User: ${userId}, State: ${state}, Text: ${text}`);
   const contact = extractContactAttachment(ctx);
-  if (contact && dbOperations.getUser(userId)?.role !== 'employer') {
+  if (state === 'appoint_wait_phone') {
+    await acceptAppointmentContact(ctx, userId, text, contact);
+    return;
+  }
+  if (contact) {
     await acceptWorkerPhoneContact(ctx, userId, contact);
     return;
   }
@@ -3827,6 +4024,11 @@ bot.on('message_created', async (ctx) => {
   }
   
   if (state === 'editing_employer_profile_choice') {
+    if (!dbOperations.getEmployerProfile(userId)) {
+      userStates.delete(userId);
+      await ctx.reply('Карточку компании меняет владелец.');
+      return;
+    }
     const choice = parseInt(text);
     const profile = dbOperations.getEmployerProfile(userId);
     if (isNaN(choice) || choice < 1 || choice > 9) {
@@ -3915,7 +4117,7 @@ bot.on('message_created', async (ctx) => {
     const choice = parseInt(text);
     const vacancyId = userStates.get(`${userId}_edit_vacancy_id`);
     const vacancy = dbOperations.getVacancyById(vacancyId);
-    if (!vacancy || vacancy.employer_id !== userId) {
+    if (!vacancy || !dbOperations.canActForEmployer(userId, vacancy.employer_id)) {
       await ctx.reply('Вакансия не найдена.');
       return;
     }
@@ -4063,8 +4265,9 @@ bot.on('message_created', async (ctx) => {
     }
     data.contactPhone = phone.phone;
     if (await denyUnverifiedVacancy(ctx, userId)) return;
+    const companyId = dbOperations.managedCompanyId(userId);
     dbOperations.addVacancy(
-      userId,
+      companyId,
       data.jobTitle,
       data.description,
       data.requirements,
