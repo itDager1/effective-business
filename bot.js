@@ -153,11 +153,9 @@ function workerMenuKeyboard(includeSwitch = false, userId = null) {
       { type: 'callback', text: 'Моя работа', payload: 'my_work' },
       { type: 'callback', text: 'Фильтры', payload: 'job_filters' }
     ],
-    ...miniAppOpenRow()
+    ...miniAppOpenRow(),
+    [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]
   );
-  if (includeSwitch) {
-    buttons.push([{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]);
-  }
   return {
     attachments: [{
       type: 'inline_keyboard',
@@ -187,11 +185,9 @@ function employerMenuKeyboard(includeSwitch = false, userId = null) {
       { type: 'callback', text: 'Отклики', payload: 'my_matches' },
       { type: 'callback', text: 'Кадры', payload: 'company_staff' }
     ],
-    ...miniAppOpenRow()
+    ...miniAppOpenRow(),
+    [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]
   );
-  if (includeSwitch) {
-    buttons.push([{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }]);
-  }
   return {
     attachments: [{
       type: 'inline_keyboard',
@@ -1121,6 +1117,7 @@ function createProfileKeyboard(role) {
       payload: {
         buttons: [
           [{ type: 'callback', text: role === 'employer' ? '🏢 Создать профиль компании' : '📝 Создать анкету', payload: 'create_profile' }],
+          [{ type: 'callback', text: '🔄 Переключить профиль', payload: 'switch_profile' }],
           [{ type: 'callback', text: 'Назад в меню', payload: 'back_to_menu' }]
         ]
       }
