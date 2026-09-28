@@ -560,10 +560,61 @@ function saveEmployer(userId, data) {
     {
       inn: data.inn,
       legal_address: data.legal_address || data.legalAddress,
-      director_fio: data.director_fio || data.directorFio,
+      director_fio: data.director_fio ?? data.directorFio ?? '',
       website: data.website || ''
     }
   );
+}
+
+function employerEditKeyboard() {
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [{ type: 'callback', text: 'ФИО руководителя', payload: 'edit_co_6' }],
+          [
+            { type: 'callback', text: 'ИНН', payload: 'edit_co_4' },
+            { type: 'callback', text: 'Юридический адрес', payload: 'edit_co_5' }
+          ],
+          [
+            { type: 'callback', text: 'Название', payload: 'edit_co_1' },
+            { type: 'callback', text: 'Отрасль', payload: 'edit_co_2' }
+          ],
+          [{ type: 'callback', text: 'О компании', payload: 'edit_co_3' }],
+          [
+            { type: 'callback', text: 'Контактное лицо', payload: 'edit_co_7' },
+            { type: 'callback', text: 'Телефон', payload: 'edit_co_8' }
+          ],
+          [{ type: 'callback', text: 'Сайт', payload: 'edit_co_9' }],
+          [{ type: 'callback', text: 'Назад к профилю', payload: 'view_employer_profile' }]
+        ]
+      }
+    }]
+  };
+}
+
+async function startEmployerFieldEdit(ctx, userId, choice) {
+  const profile = dbOperations.getEmployerProfile(userId);
+  if (!profile || Number(profile.user_id) !== Number(userId)) {
+    await ctx.reply('Карточку компании меняет владелец.');
+    return;
+  }
+  userStates.set(`${userId}_edit_employer_data`, { ...profile });
+  const prompts = {
+    1: ['edit_employer_field_1', 'Введите новое название компании:'],
+    2: ['edit_employer_field_2', 'Введите новую отрасль:'],
+    3: ['edit_employer_field_3', 'Введите новое описание компании:'],
+    4: ['edit_employer_field_4', 'Введите ИНН:'],
+    5: ['edit_employer_field_5', 'Введите юридический адрес: индекс, регион, город, улица, дом.'],
+    6: ['edit_employer_field_6', 'Введите ФИО руководителя: фамилия и имя, как в реестре.'],
+    7: ['edit_employer_field_7', 'Введите контактное лицо:'],
+    8: ['edit_employer_field_8', 'Введите реальный телефон с кодом страны, например +7 921 123-45-67 или +1 415 555 2671:'],
+    9: ['edit_employer_field_9', 'Отправьте ссылку на сайт компании, например https://company.ru. «-» — убрать сайт.']
+  };
+  const [nextState, prompt] = prompts[choice];
+  userStates.set(userId, nextState);
+  await ctx.reply(prompt, choice === 9 ? skipKeyboard('skip_website') : undefined);
 }
 
 async function verifyAndStoreEmployer(userId) {
@@ -734,7 +785,7 @@ function formatEmployerProfileText(profile, owner = true, position = '') {
       ? 'Назначить сотрудника можно кнопкой ниже. ЕГРЮЛ должность кадровика не содержит: доступ даёт владелец.'
       : 'Назначение сотрудников откроется после подтверждения компании по ЕГРЮЛ или ЕГРИП.')
     : `Ваша должность: ${position || 'сотрудник'}. Вакансии и отклики доступны. Назначить или снять роль может только владелец.`;
-  const editHint = owner ? 'Напишите номер пункта, чтобы изменить (1-9).\n' : '';
+  const editHint = owner ? 'Данные можно поменять кнопкой «Изменить данные» или номером пункта от 1 до 9.\n' : '';
   return `Профиль компании:\n` +
     `1. Название: ${profile.company_name}\n` +
     `2. Отрасль: ${profile.industry}\n` +
@@ -760,6 +811,7 @@ function employerProfileButtons(profile, owner = true) {
     buttons.push([{ type: 'callback', text: 'Доступ сотрудников', payload: 'company_access' }]);
   }
   if (owner) {
+    buttons.push([{ type: 'callback', text: 'Изменить данные', payload: 'edit_company' }]);
     buttons.push([
       { type: 'callback', text: 'Удалить профиль', payload: 'delete_employer_profile_confirm' },
       { type: 'callback', text: 'Назад', payload: 'back_to_menu' }
@@ -2851,6 +2903,22 @@ bot.on('message_callback', async (ctx) => {
     if (owner) userStates.set(userId, 'editing_employer_profile_choice');
     return;
   }
+
+  if (payload === 'edit_company') {
+    const profile = dbOperations.getEmployerProfile(userId);
+    if (!profile || Number(profile.user_id) !== Number(userId)) {
+      await ctx.reply('Карточку компании меняет владелец.');
+      return;
+    }
+    userStates.set(userId, 'editing_employer_profile_choice');
+    await ctx.reply('Что изменить? Нажмите кнопку или напишите номер пункта от 1 до 9. ФИО руководителя — пункт 6.', employerEditKeyboard());
+    return;
+  }
+
+  if (/^edit_co_[1-9]$/.test(payload || '')) {
+    await startEmployerFieldEdit(ctx, userId, Number(payload.slice(-1)));
+    return;
+  }
   
   if (payload === 'edit_profile') {
     await showOwnProfile(ctx, userId);
@@ -4024,39 +4092,22 @@ bot.on('message_created', async (ctx) => {
   }
   
   if (state === 'editing_employer_profile_choice') {
-    if (!dbOperations.getEmployerProfile(userId)) {
-      userStates.delete(userId);
-      await ctx.reply('Карточку компании меняет владелец.');
-      return;
-    }
     const choice = parseInt(text);
-    const profile = dbOperations.getEmployerProfile(userId);
     if (isNaN(choice) || choice < 1 || choice > 9) {
-      await ctx.reply('Пожалуйста, введите число от 1 до 9.');
+      await ctx.reply('Введите число от 1 до 9 или нажмите кнопку.', employerEditKeyboard());
       return;
     }
-    if (!userStates.has(`${userId}_edit_employer_data`)) {
-      userStates.set(`${userId}_edit_employer_data`, { ...profile });
-    }
-    const prompts = {
-      1: ['edit_employer_field_1', 'Введите новое название компании:'],
-      2: ['edit_employer_field_2', 'Введите новую отрасль:'],
-      3: ['edit_employer_field_3', 'Введите новое описание компании:'],
-      4: ['edit_employer_field_4', 'Введите ИНН:'],
-      5: ['edit_employer_field_5', 'Введите юридический адрес: индекс, регион, город, улица, дом.'],
-      6: ['edit_employer_field_6', 'Введите ФИО руководителя:'],
-      7: ['edit_employer_field_7', 'Введите контактное лицо:'],
-      8: ['edit_employer_field_8', 'Введите реальный телефон с кодом страны, например +7 921 123-45-67 или +1 415 555 2671:'],
-      9: ['edit_employer_field_9', 'Отправьте ссылку на сайт компании, например https://company.ru. «-» — убрать сайт.']
-    };
-    const [nextState, prompt] = prompts[choice];
-    userStates.set(userId, nextState);
-    await ctx.reply(prompt, choice === 9 ? skipKeyboard('skip_website') : undefined);
+    await startEmployerFieldEdit(ctx, userId, choice);
     return;
   }
   
   if (/^edit_employer_field_[1-9]$/.test(state)) {
-    const editData = userStates.get(`${userId}_edit_employer_data`);
+    const editData = userStates.get(`${userId}_edit_employer_data`) || dbOperations.getEmployerProfile(userId);
+    if (!editData || Number(editData.user_id) !== Number(userId)) {
+      userStates.delete(userId);
+      await ctx.reply('Откройте профиль компании и выберите поле ещё раз.');
+      return;
+    }
     if (state === 'edit_employer_field_3' && !String(text || '').trim()) {
       await ctx.reply('Напишите о компании. Достаточно одного символа.');
       return;
@@ -4092,7 +4143,13 @@ bot.on('message_created', async (ctx) => {
       }
       editData.legal_address = text.trim();
     }
-    else if (state === 'edit_employer_field_6') editData.director_fio = text;
+    else if (state === 'edit_employer_field_6') {
+      if (text.trim().split(/\s+/).length < 2) {
+        await ctx.reply('Укажите фамилию и имя руководителя полностью.');
+        return;
+      }
+      editData.director_fio = text.trim();
+    }
     else if (state === 'edit_employer_field_7') editData.contact_person = text;
 
     saveEmployer(userId, editData);

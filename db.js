@@ -284,7 +284,7 @@ export const dbOperations = {
   },
 
   addEmployerProfile: (userId, companyName, industry, description, contactPerson, phone, extras = {}) => {
-    const existing = database.employers.find(e => e.user_id === userId);
+    const existing = database.employers.find(e => Number(e.user_id) === Number(userId));
     const inn = extras.inn !== undefined ? String(extras.inn).replace(/\D/g, '') : (existing?.inn || '');
     const legalAddress = extras.legal_address !== undefined ? extras.legal_address : (existing?.legal_address || '');
     const directorFio = extras.director_fio !== undefined ? extras.director_fio : (existing?.director_fio || '');
@@ -332,7 +332,7 @@ export const dbOperations = {
   },
 
   setEmployerVerification: (userId, verification) => {
-    const profile = database.employers.find(e => e.user_id === userId);
+    const profile = database.employers.find(e => Number(e.user_id) === Number(userId));
     if (!profile) return null;
     const keepVerified = verification?.status === 'unavailable'
       && profile.verification?.status === 'verified'
@@ -348,7 +348,7 @@ export const dbOperations = {
   },
 
   getEmployerProfile: (userId) => {
-    return database.employers.find(e => e.user_id === userId) || null;
+    return database.employers.find(e => Number(e.user_id) === Number(userId)) || null;
   },
 
   managedCompanyId: (userId) => {
