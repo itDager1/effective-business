@@ -828,6 +828,17 @@ function employerProfileButtons(profile, owner = true) {
   };
 }
 
+function backToEmployerProfileKeyboard() {
+  return {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [[{ type: 'callback', text: 'Вернуться в профиль', payload: 'view_employer_profile' }]]
+      }
+    }]
+  };
+}
+
 async function denyUnverifiedVacancy(ctx, userId) {
   const companyId = dbOperations.managedCompanyId(userId);
   const profile = companyId ? dbOperations.getEmployerProfile(companyId) : null;
@@ -2514,16 +2525,16 @@ bot.on('message_callback', async (ctx) => {
       return;
     }
     if (!profile.inn || !profile.director_fio || !profile.legal_address) {
-      await ctx.reply('Для проверки нужны ИНН, ФИО руководителя и юридический адрес. Откройте профиль компании и заполните пункты 4–6.');
+      await ctx.reply('Для проверки нужны ИНН, ФИО руководителя и юридический адрес. Откройте профиль компании и заполните пункты 4–6.', backToEmployerProfileKeyboard());
       return;
     }
     await ctx.reply('Сверяем данные с ЕГРЮЛ/ЕГРИП ФНС…');
     const result = await verifyAndStoreEmployer(userId);
     if (result.ok) {
       const reg = result.registry === 'egrip' ? 'ЕГРИП' : 'ЕГРЮЛ';
-      await ctx.reply(`✅ Компания подтверждена по ${reg}.\n${result.fetched_name || ''}\nМожно размещать вакансии.`);
+      await ctx.reply(`✅ Компания подтверждена по ${reg}.\n${result.fetched_name || ''}\nМожно размещать вакансии.`, backToEmployerProfileKeyboard());
     } else {
-      await ctx.reply(`❌ Проверка не пройдена — компания не подтверждена.\n${result.error || 'ФИО руководителя или юридический адрес не совпали с реестром.'}\nВ ваших вакансиях соискатели видят пометку «Компания не подтверждена».`);
+      await ctx.reply(`❌ Проверка не пройдена — компания не подтверждена.\n${result.error || 'ФИО руководителя или юридический адрес не совпали с реестром.'}\nВ ваших вакансиях соискатели видят пометку «Компания не подтверждена».`, backToEmployerProfileKeyboard());
     }
     return;
   }
