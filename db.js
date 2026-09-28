@@ -965,6 +965,42 @@ export const dbOperations = {
     return row;
   },
 
+  dismissStaff: (staffId, actorId) => {
+    const row = (database.staff || []).find((s) => Number(s.id) === Number(staffId));
+    if (!row || row.status !== 'active') return { ok: false, error: 'Сотрудник не найден в штате' };
+    if (!dbOperations.canActForEmployer(actorId, row.employer_id)) {
+      return { ok: false, error: 'Уволить может компания, в штате которой числится сотрудник' };
+    }
+    const now = new Date().toISOString();
+    row.status = 'dismissed';
+    row.left_at = now;
+    row.dismissed_by = actorId;
+    row.updated_at = now;
+    const match = (database.matches || []).find((m) =>
+      m.status === 'accepted' && (
+        Number(m.id) === Number(row.match_id)
+        || (
+          Number(m.employer_id) === Number(row.employer_id)
+          && Number(m.worker_id) === Number(row.worker_id)
+          && Number(m.vacancy_id) === Number(row.vacancy_id)
+        )
+      )
+    );
+    if (match) {
+      match.status = 'cancelled';
+      match.cancelled_by = actorId;
+      match.updated_at = now;
+    }
+    for (const offer of database.dev_offers || []) {
+      if (Number(offer.staff_id) === Number(row.id) && offer.status === 'pending') {
+        offer.status = 'cancelled';
+        offer.updated_at = now;
+      }
+    }
+    saveDb();
+    return { ok: true, staff: dbOperations.decorateStaff(row) };
+  },
+
   leaveStaffFromMatch: (match, persist = true) => {
     if (!match || !database.staff) return null;
     const row = database.staff.find((s) =>

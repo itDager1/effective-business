@@ -37,6 +37,7 @@ import {
   developmentStatusLabel,
   developmentOfferNotice,
   developmentActionKeyboard,
+  staffDismissedNotice,
   staffJoinedNotice
 } from './staff-flow.js';
 
@@ -949,6 +950,22 @@ async function handleApi(req, res, url) {
         company_name: dbOperations.getEmployerProfile(o.employer_id)?.company_name || 'Компания'
       }))
     });
+    return;
+  }
+
+  const staffDismiss = pathname.match(/^\/api\/staff\/(\d+)\/dismiss$/);
+  if (method === 'POST' && staffDismiss) {
+    const result = dbOperations.dismissStaff(Number(staffDismiss[1]), userId);
+    if (!result.ok) {
+      sendJson(res, 400, { error: result.error || 'Не получилось уволить сотрудника' });
+      return;
+    }
+    try {
+      await sendMaxMessage(result.staff.worker_id, staffDismissedNotice(result.staff));
+    } catch (err) {
+      console.error('[STAFF notify]', err.message || err);
+    }
+    sendJson(res, 200, { ok: true });
     return;
   }
 

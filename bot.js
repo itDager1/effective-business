@@ -25,6 +25,7 @@ import {
   formatEmploymentCard,
   formatStaffCard,
   formatStaffListItem,
+  staffDismissedNotice,
   staffJoinedNotice
 } from './staff-flow.js';
 
@@ -1759,12 +1760,47 @@ async function showStaffCard(ctx, userId, staffId) {
             { type: 'callback', text: 'Стажировка', payload: `sfi_${row.id}` },
             { type: 'callback', text: 'Обучение', payload: `sft_${row.id}` }
           ],
+          [{ type: 'callback', text: 'Уволить', payload: `sfd_${row.id}` }],
           [{ type: 'callback', text: 'Полная анкета', payload: `ma_${row.match_id}` }],
           [{ type: 'callback', text: 'К кадрам', payload: 'company_staff' }]
         ]
       }
     }]
   });
+}
+
+async function confirmDismissStaff(ctx, userId, staffId) {
+  const row = dbOperations.getStaffById(staffId);
+  if (!row || !dbOperations.canActForEmployer(userId, row.employer_id) || row.status !== 'active') {
+    await ctx.reply('Сотрудник не найден в штате.');
+    return;
+  }
+  const name = row.worker?.full_name || 'сотрудника';
+  const position = row.position || row.vacancy?.job_title || 'должность';
+  await ctx.reply(`Уволить ${name} с должности «${position}»? Человек пропадёт из штата, открытые контакты по этому отклику закроются.`, {
+    attachments: [{
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [{ type: 'callback', text: 'Да, уволить', payload: `sfdok_${row.id}` }],
+          [{ type: 'callback', text: 'Отмена', payload: `sf_${row.id}` }]
+        ]
+      }
+    }]
+  });
+}
+
+async function dismissStaffMember(ctx, userId, staffId) {
+  const result = dbOperations.dismissStaff(staffId, userId);
+  if (!result.ok) {
+    await ctx.reply(result.error || 'Не получилось уволить сотрудника.');
+    return;
+  }
+  const name = result.staff?.worker?.full_name || 'Сотрудник';
+  const position = result.staff?.position || result.staff?.vacancy?.job_title || 'должность';
+  await notifyUser(ctx.api, result.staff.worker_id, staffDismissedNotice(result.staff));
+  await ctx.reply(`${name} уволен с должности «${position}».`);
+  await showCompanyStaff(ctx, userId);
 }
 
 async function startStaffDevelopmentOffer(ctx, userId, staffId, kind) {
@@ -3297,6 +3333,16 @@ bot.on('message_callback', async (ctx) => {
 
   if (/^sft_\d+$/.test(payload || '')) {
     await startStaffDevelopmentOffer(ctx, userId, Number(payload.replace('sft_', '')), 'training');
+    return;
+  }
+
+  if (/^sfd_\d+$/.test(payload || '')) {
+    await confirmDismissStaff(ctx, userId, Number(payload.replace('sfd_', '')));
+    return;
+  }
+
+  if (/^sfdok_\d+$/.test(payload || '')) {
+    await dismissStaffMember(ctx, userId, Number(payload.replace('sfdok_', '')));
     return;
   }
 

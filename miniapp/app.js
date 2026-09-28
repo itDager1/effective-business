@@ -493,7 +493,10 @@ function staffScreen() {
           <button class="btn" data-act="offer-train" data-id="${person.id}">Обучение</button>
         </div>
       </div>
-      <div class="row"><button class="btn ghost" data-act="staff-back">К кадрам</button></div>
+      <div class="row">
+        <button class="btn danger" data-act="staff-dismiss" data-id="${person.id}">Уволить</button>
+        <button class="btn ghost" data-act="staff-back">К кадрам</button>
+      </div>
     `, 'employer', 'staff');
   }
   const items = state.staff || [];
@@ -1045,6 +1048,17 @@ app.addEventListener('click', async (e) => {
     } else if (act === 'staff-back') {
       state.staffDetail = null;
       await loadStaff();
+      render();
+    } else if (act === 'staff-dismiss') {
+      const id = e.target.closest('[data-id]')?.dataset.id;
+      const person = state.staff.find((row) => String(row.id) === String(id));
+      const name = person?.worker?.full_name || 'сотрудника';
+      const position = person?.position || person?.vacancy?.job_title || 'должность';
+      if (!confirm(`Уволить ${name} с должности «${position}»?`)) return;
+      await api(`/api/staff/${id}/dismiss`, { method: 'POST', body: '{}' });
+      state.staffDetail = null;
+      await loadStaff();
+      toast(`${name} уволен`);
       render();
     } else if (act === 'offer-intern' || act === 'offer-train') {
       const id = e.target.closest('[data-id]')?.dataset.id;

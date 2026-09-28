@@ -52,6 +52,12 @@ export function formatEmploymentCard(row) {
     `С ${formatDate(row.joined_at)}`;
 }
 
+export function staffDismissedNotice(row) {
+  const company = row.employer?.company_name || 'Компания';
+  const position = row.position || row.vacancy?.job_title || 'сотрудник';
+  return `«${company}» уволила вас с должности «${position}». Вы больше не числитесь в штате, контакты по этому отклику закрыты.`;
+}
+
 export function staffJoinedNotice(row) {
   const company = row.employer?.company_name || 'компанию';
   const position = row.position || row.vacancy?.job_title || 'сотрудник';
