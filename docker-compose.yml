@@ -3,7 +3,8 @@ services:
     build: .
     container_name: effective-business
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       MINI_APP_PORT: "8080"
       DATA_FILE: /app/data/data.json

@@ -4416,6 +4416,10 @@ bot.on('message_created', async (ctx) => {
 });
 
 const startBot = () => {
+  if (!String(process.env.BOT_TOKEN || '').trim()) {
+    console.log('[BOT] BOT_TOKEN не задан. Nginx и мини-приложение работают. Токен в репозиторий не входит: впишите его в .env с первого слайда и перезапустите контейнер.');
+    return;
+  }
   bot.start().catch((err) => {
     console.error('Connection error, restarting in 5 seconds...', err.message);
     setTimeout(startBot, 5000);
